@@ -46,7 +46,14 @@ export function shade(hex, f) {
 // Merge the plain boxes on each joint into one vertex-coloured mesh, so a detailed model costs
 // a draw call per moving part instead of one per box. Groups made with fixed() fold into their
 // joint; every other group (or a mesh like the blinking eyes) is a joint of its own.
+// Parts smaller than SHADOW_MIN_RADIUS (eyes, ears, glints) don't cast shadows: their shadows are
+// too small to see, but each one would cost a draw call in the shadow pass every frame.
 const bakedMat = new THREE.MeshLambertMaterial({ vertexColors: true });
+const SHADOW_MIN_RADIUS = 0.12;
+function castsShadow(geometry) {
+  if (!geometry.boundingSphere) geometry.computeBoundingSphere();
+  return geometry.boundingSphere.radius >= SHADOW_MIN_RADIUS;
+}
 export function bake(joint) {
   const geos = [];
   (function collect(node, m) {
@@ -61,12 +68,16 @@ export function bake(joint) {
         geos.push(g);
         node.remove(c);
       } else if (c.userData.fixed) { collect(c, cm); node.remove(c); }
-      else bake(c);
+      else {
+        if (c.isMesh) c.castShadow = castsShadow(c.geometry);
+        bake(c);
+      }
     }
   })(joint, new THREE.Matrix4());
   if (!geos.length) return;
   const mesh = new THREE.Mesh(mergeGeometries(geos), bakedMat);
-  mesh.castShadow = mesh.receiveShadow = true;
+  mesh.castShadow = castsShadow(mesh.geometry);
+  mesh.receiveShadow = true;
   joint.add(mesh);
 }
 

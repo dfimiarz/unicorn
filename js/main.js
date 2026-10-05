@@ -11,7 +11,7 @@ import { updatePlayer } from './controls.js';
 import { updateCamera } from './camera.js';
 import { updateSky } from './daynight.js';
 import { updateHud } from './hud.js';
-import { composer, godRays, renderRayMask } from './postfx.js';
+import { composer, renderGodRays } from './postfx.js';
 import { state } from './state.js';
 
 // Entry point: builds the start area, then runs the game loop.
@@ -54,7 +54,7 @@ function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
   update(dt);
-  if (godRays.uniforms.intensity.value > 0) renderRayMask();
+  renderGodRays();
   renderer.shadowMap.needsUpdate = true;
   composer.render();
 }

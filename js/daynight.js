@@ -5,7 +5,7 @@ import { renderer, scene, camera } from './render.js';
 import { NIGHT_SKY, SUN_INTENSITY, MOON_INTENSITY, skyMat, skyScene, skyTarget, skyCubeCam, skyRadiance,
   sunTransmittance, MS_FILL, toneMapSky, sunDisc, moonDisc, stars, hemi, sunLight } from './sky.js';
 import { water, waterMat, seaFloor, cloudMat } from './environment.js';
-import { godRays } from './postfx.js';
+import { setGodRays } from './postfx.js';
 import { lookDir } from './camera.js';
 import { player } from './player.js';
 import { keys, isLocked } from './input.js';
@@ -136,12 +136,9 @@ export function updateSky(dt) {
   let rays = 0;
   if (!under && facing > 0.05 && sunY > -0.03) {
     tmp.copy(camera.position).addScaledVector(sunDir, 400).project(camera);
-    godRays.uniforms.sunPos.value.set(tmp.x * 0.5 + 0.5, tmp.y * 0.5 + 0.5);
     rays = 0.55 * smoothstep(0.05, 0.6, facing) * sunUp * (0.5 + 0.8 * (1 - smoothstep(0.05, 0.6, sunY)));
   }
-  godRays.uniforms.intensity.value = rays;
-  godRays.uniforms.color.value.copy(sunColor);
-  godRays.uniforms.aspect.value = camera.aspect;
+  setGodRays(rays, sunColor, tmp.x * 0.5 + 0.5, tmp.y * 0.5 + 0.5, camera.aspect); // sun position only used when rays > 0
 }
 
 const PHASES = [[4.8, 'Night'], [5.8, 'Dawn'], [7.2, 'Sunrise'], [11, 'Morning'], [14, 'Midday'], [17, 'Afternoon'], [18.6, 'Sunset'], [19.5, 'Dusk'], [24, 'Night']];

@@ -4,7 +4,7 @@ import { wrapAngle, lerpAngle } from './util.js';
 import { findLand } from './world.js';
 import { scene } from './render.js';
 import { Entity } from './physics.js';
-import { box, pivot } from './modelkit.js';
+import { box, pivot, bake } from './modelkit.js';
 import { state } from './state.js';
 
 // Models face -Z, so rotation.y uses the same yaw as the camera.
@@ -24,6 +24,7 @@ function makePlayerModel() {
   box(0.47, 0.3, 0.08, HAIR, 0, 0.28, 0.2, head);
   for (const s of [-1, 1]) { box(0.09, 0.06, 0.02, 0xffffff, s * 0.1, 0.22, -0.226, head); box(0.045, 0.06, 0.025, 0x3355aa, s * 0.08, 0.22, -0.228, head); }
   box(0.14, 0.04, 0.02, 0x9a5a4a, 0, 0.1, -0.226, head);
+  bake(root);
   scene.add(root);
   return { root, legL, legR, armL, armR, head };
 }
