@@ -13,6 +13,7 @@ canvas { display: block; }
 #status { top: 10px; left: 12px; }
 #score { top: 10px; right: 12px; text-align: right; }
 #hint { bottom: 14px; left: 12px; font-size: 12px; opacity: .85; }
+#fps { bottom: 14px; right: 12px; font-size: 12px; opacity: .85; }
 #clock { top: 10px; left: 50%; transform: translateX(-50%); font-size: 17px; }
 #prompt { bottom: 82px; left: 50%; transform: translateX(-50%); font-size: 18px; white-space: nowrap; }
 #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(30,10,50,.55); cursor: pointer; }

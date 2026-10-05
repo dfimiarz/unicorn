@@ -4,7 +4,7 @@ import { nearestMob, ridden } from './riding.js';
 import { totalUnicorns, totalHorses, totalDragons } from './spawn.js';
 import { clockText } from './daynight.js';
 
-// The hotbar, the clock, and the status and score text.
+// The hotbar, the clock, the frame rate, and the status and score text.
 export let selected = 0; // hotbar slot
 const hotbarEl = document.getElementById('hotbar');
 const slotEls = HOTBAR.map((t, i) => {
@@ -29,7 +29,22 @@ selectSlot(0);
 const clockEl = document.getElementById('clock');
 const statusEl = document.getElementById('status'), scoreEl = document.getElementById('score'), promptEl = document.getElementById('prompt');
 function setText(el, txt) { if (el._t !== txt) { el._t = txt; el.textContent = txt; } }
+
+// frame rate, counted in real time (the game's dt is capped) and refreshed twice a second;
+// hidden until F3 is pressed
+const fpsEl = document.getElementById('fps');
+export function toggleFps() { fpsEl.hidden = !fpsEl.hidden; }
+let fpsFrames = 0, fpsStart = performance.now();
+function updateFps() {
+  fpsFrames++;
+  const now = performance.now();
+  if (now - fpsStart < 500) return;
+  setText(fpsEl, `${Math.round(fpsFrames * 1000 / (now - fpsStart))} FPS`);
+  fpsFrames = 0; fpsStart = now;
+}
+
 export function updateHud() {
+  updateFps();
   setText(clockEl, clockText());
   const m = player.riding;
   if (m) {

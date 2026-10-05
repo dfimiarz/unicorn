@@ -11,7 +11,7 @@ import { dragons, rideDragon } from './dragon.js';
 import { nearestMob, mount, dismount } from './riding.js';
 import { target } from './camera.js';
 import { keys, isLocked } from './input.js';
-import { selected, selectSlot } from './hud.js';
+import { selected, selectSlot, toggleFps } from './hud.js';
 import { state } from './state.js';
 
 // What the player does: walking, steering a ridden animal, and breaking and placing blocks.
@@ -42,6 +42,8 @@ function placeBlock() {
 
 // ---------------------------------------------------------------- key + mouse actions
 addEventListener('keydown', e => {
+  // F3 works while paused too, and must not open the browser's find bar
+  if (e.code === 'F3') { e.preventDefault(); if (!e.repeat) toggleFps(); return; }
   if (!isLocked() || e.repeat) return;
   if (e.code === 'KeyE') {
     if (player.riding) dismount();
