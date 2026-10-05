@@ -47,7 +47,7 @@ export function updatePlayerModel(dt) {
     pm.root.rotation.set(body.rotation.x + lean, m.yaw, body.rotation.z);
     tmp.set(0, 0.675, 0).applyEuler(pm.root.rotation);
     pm.root.position.copy(m.seatWorld).sub(tmp);
-    const straddle = dragon ? 0.8 : 0.6; // a dragon's back is broader
+    const straddle = dragon ? 0.8 : 0.6 * m.size; // dragons and great unicorns have broader backs
     pm.legL.rotation.set(0.4, 0, -straddle);
     pm.legR.rotation.set(0.4, 0, straddle);
     const rein = 0.75 + Math.sin(m.phase * Math.PI * 4) * 0.08 * move;

@@ -47,7 +47,8 @@ export function updateCamera() {
   camera.rotation.set(state.pitch, state.yaw, 0);
   if (state.camMode === 1) {
     // pull the camera back behind the player, stopping short of any block in the way
-    const maxDist = !player.riding ? 4 : player.riding.kind === 'dragon' ? 8 : 6;
+    const m = player.riding;
+    const maxDist = !m ? 4 : m.kind === 'dragon' ? 8 : 6 * m.size;
     let d = 0;
     while (d < maxDist) {
       tmp.copy(eye).addScaledVector(dir, -(d + 0.3));

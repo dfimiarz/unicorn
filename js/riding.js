@@ -18,7 +18,7 @@ export function nearestMob() {
     const d = Math.hypot(m.pos.x - player.pos.x, m.pos.z - player.pos.z);
     if (d < reach && d < bd && Math.abs(m.pos.y - player.pos.y) < 2.5) { bd = d; best = m; }
   };
-  for (const m of mobs) check(m, 3.2);
+  for (const m of mobs) check(m, 3.2 * m.size);
   for (const d of dragons) check(d, 3.6);
   return best;
 }
@@ -47,7 +47,7 @@ export function dismount() {
   player.riding = null;
   player.vel.set(0, 0, 0);
   if (m.kind === 'dragon') m.aiTimer = 1 + rand() * 2; // a dragon left in the air soon comes down
-  const rx = Math.cos(m.yaw), rz = -Math.sin(m.yaw), off = m.kind === 'dragon' ? 1.5 : 1.1;
+  const rx = Math.cos(m.yaw), rz = -Math.sin(m.yaw), off = m.kind === 'dragon' ? 1.5 : 1.1 * m.size;
   for (const s of [1, -1]) {
     const px = m.pos.x + rx * s * off, pz = m.pos.z + rz * s * off;
     if (!boxCollides(px, m.pos.y, pz, player.hw, player.h)) { player.pos.set(px, m.pos.y, pz); return; }

@@ -314,14 +314,16 @@ function animateHorse(m, dt) {
   if (m.airTime === 0 && prevAir > 0.25) m.landT = 1;
   const flying = m.kind === 'unicorn' && m.airTime > 0.25;
 
-  // blend smoothly between gaits as speed changes
-  const target = flying ? 'gallop' : hs < 2.8 ? 'walk' : hs < 5.8 ? 'trot' : 'gallop';
+  // blend smoothly between gaits as speed changes (bigger animals switch gait at higher speeds,
+  // and take longer strides)
+  const gs = hs / m.pace;
+  const target = flying ? 'gallop' : gs < 2.8 ? 'walk' : gs < 5.8 ? 'trot' : 'gallop';
   let stride = 0;
   for (const g of GAIT_NAMES) {
     m.gw[g] += ((g === target ? 1 : 0) - m.gw[g]) * Math.min(1, dt * 5);
-    stride += m.gw[g] * GAITS[g].stride;
+    stride += m.gw[g] * GAITS[g].stride * m.size;
   }
-  m.phase = (m.phase + dt * (flying ? 2.2 : hs / stride)) % 1;
+  m.phase = (m.phase + dt * (flying ? 2.2 / m.pace : hs / stride)) % 1;
 
   const hip = [0, 0, 0, 0], knee = [0, 0, 0, 0];
   for (const g of GAIT_NAMES) {
@@ -471,15 +473,21 @@ export const HORSE_NAMES = ['Biscuit', 'Thunder', 'Daisy', 'Pepper', 'Clover', '
 export const UNICORN_NAMES = ['Sparkle', 'Stardust', 'Moonbeam', 'Twinkle'];
 export const UNICORN_COAT = { coat: 'Unicorn', body: 0xfdf8ff, mane: 0xffffff, pad: 0xcdb4ff };
 
+// A normal unicorn stands 2.3 blocks to the tip of its horn; a great unicorn is about a block taller.
+export const GREAT_UNICORN_SIZE = 1.44;
+
 export const mobs = [];
-export function makeMob(kind, coat, name, p) {
+// size scales the whole animal: model, collision box, saddle height and stride (1 = normal size).
+// Speeds scale with √size, so a bigger animal covers more ground at the same gait.
+export function makeMob(kind, coat, name, p, size = 1) {
   const unicorn = kind === 'unicorn';
-  const m = new Entity(0.45, 1.5);
+  const m = new Entity(0.45 * size, 1.5 * size);
+  const pace = Math.sqrt(size);
   Object.assign(m, {
-    kind, name, coat: coat.coat,
-    speed: unicorn ? 12 : 8.5,
-    walkSpeed: unicorn ? 1.8 : 1.4,
-    runSpeed: unicorn ? 7.5 : 6.5,
+    kind, name, coat: coat.coat, size, pace,
+    speed: (unicorn ? 12 : 8.5) * pace,
+    walkSpeed: (unicorn ? 1.8 : 1.4) * pace,
+    runSpeed: (unicorn ? 7.5 : 6.5) * pace,
     model: makeHorseModel(coat, unicorn),
     state: 'idle', aiTimer: rand() * 3, phase: 0, turnCd: 0, rider: null,
     // animation state
@@ -487,14 +495,16 @@ export function makeMob(kind, coat, name, p) {
     idle: null, idleCd: 2 + Math.random() * 4, grazeW: 0, turn: 0, prevYaw: 0,
     earT: Math.random() * 3, earFlick: 0, earSide: 0, blinkT: Math.random() * 4, swish: 0,
     breath: Math.random() * 6, seatWorld: new THREE.Vector3(),
-    baseH: 1.5, riddenH: 2.4, seatRestY: SEAT_REST_Y,
+    baseH: 1.5 * size, riddenH: SEAT_REST_Y * size + 0.92, seatRestY: SEAT_REST_Y * size, // riddenH: room for the rider's head
     wingFold: 1, wingAmp: 0, wingFreq: 1, wingDihedral: 0.1, wingP: 0,
-    label: unicorn ? `${name} the Unicorn` : `${name} the ${coat.coat} horse`,
+    label: unicorn ? `${name} the ${size > 1 ? 'Great ' : ''}Unicorn` : `${name} the ${coat.coat} horse`,
   });
   m.pos.copy(p);
   m.yaw = m.wanderYaw = m.prevYaw = rand() * Math.PI * 2;
+  m.model.root.scale.setScalar(size);
   m.tag = nameTag(unicorn ? '✨ ' + name + ' ✨' : name);
   m.tag.position.set(0, 2.45, 0);
+  m.tag.scale.divideScalar(size); // the tag sits above the scaled model, but its text stays the usual size
   m.model.root.add(m.tag);
   mobs.push(m);
   return m;
@@ -510,7 +520,7 @@ export function updateMob(m, dt) {
       const r = rand();
       if (r < 0.35) { m.state = 'idle'; m.aiTimer = 2 + rand() * 3; }
       else if (r < 0.55) { m.state = 'graze'; m.aiTimer = 3 + rand() * 4; }
-      else if (r < 0.65) { m.state = 'run'; m.aiTimer = 2 + rand() * 2; m.wanderYaw = rand() * Math.PI * 2; m.runTo = rand() < 0.5 ? 4.2 : m.runSpeed; }
+      else if (r < 0.65) { m.state = 'run'; m.aiTimer = 2 + rand() * 2; m.wanderYaw = rand() * Math.PI * 2; m.runTo = rand() < 0.5 ? 4.2 * m.pace : m.runSpeed; }
       else { m.state = 'walk'; m.aiTimer = 2 + rand() * 4; m.wanderYaw = rand() * Math.PI * 2; }
     }
     let tx = 0, tz = 0;
@@ -543,7 +553,8 @@ export function updateMob(m, dt) {
   if (m.kind === 'unicorn') {
     const moving = hs > 1.5 || !m.onGround;
     if (moving) {
-      tmp.set(m.pos.x + Math.sin(m.yaw) * 0.9 + rnd(-0.3, 0.3), m.pos.y + rnd(0.5, 1.3), m.pos.z + Math.cos(m.yaw) * 0.9 + rnd(-0.3, 0.3));
+      const s = m.size; // the trail comes off the rump, wherever that is on this size of unicorn
+      tmp.set(m.pos.x + Math.sin(m.yaw) * 0.9 * s + rnd(-0.3, 0.3) * s, m.pos.y + rnd(0.5, 1.3) * s, m.pos.z + Math.cos(m.yaw) * 0.9 * s + rnd(-0.3, 0.3) * s);
       spawnParticle(tmp, rnd(-0.3, 0.3), rnd(0, 0.6), rnd(-0.3, 0.3), SPARKLE_COLORS[Math.floor(Math.random() * SPARKLE_COLORS.length)], rnd(0.6, 1), -0.5, rnd(0.6, 1.1));
     } else if (Math.random() < dt * 4 && md.horn) {
       md.horn.getWorldPosition(tmp);
