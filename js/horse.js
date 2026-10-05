@@ -6,7 +6,7 @@ import { RAINBOW_HEX } from './blocks.js';
 import { rand, columnTop } from './world.js';
 import { scene } from './render.js';
 import { Entity, physics, accelerate, ledgeJump } from './physics.js';
-import { box, pivot, fixed, shade, bake, nameTag, LEATHER, GOLD } from './modelkit.js';
+import { box, pivot, fixed, shade, bake, nameTag, barrelRoll, LEATHER, GOLD } from './modelkit.js';
 import { spawnParticle } from './particles.js';
 import { player } from './player.js';
 import { state } from './state.js';
@@ -16,11 +16,11 @@ import { state } from './state.js';
 // ---------------------------------------------------------------- horse model
 // Horse rig: root (position + yaw) → body pivot at the hind hips (bob, pitch, lean, rearing)
 // → two-segment legs, neck → head, jointed tail. Leg order is FL, FR, HL, HR.
-const HIP_Y = 0.8, SEAT_REST_Y = HIP_Y + 0.68;
+const HIP_Y = 0.8, HIP_Z = 0.55, SEAT_REST_Y = HIP_Y + 0.68;
 const STEEL = 0xb8bcc4, SOCK = 0xf4f1ea;
 function makeHorseModel(c, unicorn) {
   const root = new THREE.Group();
-  const body = pivot(0, HIP_Y, 0.55, root);
+  const body = pivot(0, HIP_Y, HIP_Z, root);
   const hoof = unicorn ? 0xd9b3ff : 0x3a2a1e;
   const saddle = unicorn ? 0xff6fb5 : 0x6b3a1e, strap = unicorn ? 0xff9ad5 : LEATHER;
   const metal = unicorn ? GOLD : STEEL, trim = unicorn ? GOLD : 0xf0e6d0;
@@ -419,9 +419,10 @@ function animateHorse(m, dt) {
   if (md.wings) bob += animateWings(m, dt, flying, jumping);
 
   // apply
-  md.body.position.y = HIP_Y + bob + Math.sin(state.time * 2 + m.breath) * 0.006;
+  md.body.position.set(0, HIP_Y + bob + Math.sin(state.time * 2 + m.breath) * 0.006, HIP_Z);
   md.body.rotation.x = pitch;
   md.body.rotation.z = lean;
+  barrelRoll(m, dt, md.body, 0.3); // about the middle of the barrel
   for (let i = 0; i < 4; i++) { md.legs[i].hip.rotation.x = hip[i]; md.legs[i].knee.rotation.x = knee[i]; }
   md.neck.rotation.x = neckX;
   md.neck.rotation.y = neckY;
@@ -496,7 +497,7 @@ export function makeMob(kind, coat, name, p, size = 1) {
     earT: Math.random() * 3, earFlick: 0, earSide: 0, blinkT: Math.random() * 4, swish: 0,
     breath: Math.random() * 6, seatWorld: new THREE.Vector3(),
     baseH: 1.5 * size, riddenH: SEAT_REST_Y * size + 0.92, seatRestY: SEAT_REST_Y * size, // riddenH: room for the rider's head
-    wingFold: 1, wingAmp: 0, wingFreq: 1, wingDihedral: 0.1, wingP: 0,
+    wingFold: 1, wingAmp: 0, wingFreq: 1, wingDihedral: 0.1, wingP: 0, roll: null, barrel: 0,
     label: unicorn ? `${name} the ${size > 1 ? 'Great ' : ''}Unicorn` : `${name} the ${coat.coat} horse`,
   });
   m.pos.copy(p);

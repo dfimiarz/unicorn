@@ -11,8 +11,15 @@ export function lookDir() {
 }
 export function eyePos() {
   if (player.riding) {
+    const m = player.riding;
+    if (m.barrel && state.camMode === 0) {
+      // first person in a barrel roll: the rider's head swings round the roll axis with the saddle
+      const h = m.seatRestY + 0.94 - m.rollAxisH, s = Math.sin(m.barrel) * h;
+      return new THREE.Vector3(m.pos.x - s * Math.cos(m.yaw), m.pos.y + m.rollAxisH + Math.cos(m.barrel) * h, m.pos.z + s * Math.sin(m.yaw));
+    }
     // follow the saddle up and down, but only half as much so the camera isn't too bouncy
-    const m = player.riding, seatLift = m.seatWorld.y - (m.pos.y + m.seatRestY);
+    // (not during a barrel roll, which swings the saddle right round)
+    const seatLift = m.roll ? 0 : m.seatWorld.y - (m.pos.y + m.seatRestY);
     return new THREE.Vector3(m.pos.x, m.pos.y + m.seatRestY + 0.94 + seatLift * 0.5, m.pos.z);
   }
   return new THREE.Vector3(player.pos.x, player.pos.y + 1.62, player.pos.z);
@@ -40,14 +47,19 @@ export const highlight = new THREE.LineSegments(
 scene.add(highlight);
 export let target = null; // the block the player is looking at, or null
 
-const tmp = new THREE.Vector3();
+const tmp = new THREE.Vector3(), rollQ = new THREE.Quaternion();
 export function updateCamera() {
   const eye = eyePos();
   const dir = lookDir();
   camera.rotation.set(state.pitch, state.yaw, 0);
+  const m = player.riding;
+  if (state.camMode === 0 && m?.barrel) {
+    // in first person the view rolls with the animal, around its long axis
+    rollQ.setFromAxisAngle(tmp.set(Math.sin(m.yaw), 0, Math.cos(m.yaw)), m.barrel);
+    camera.quaternion.premultiply(rollQ);
+  }
   if (state.camMode === 1) {
     // pull the camera back behind the player, stopping short of any block in the way
-    const m = player.riding;
     const maxDist = !m ? 4 : m.kind === 'dragon' ? 8 : 6 * m.size;
     let d = 0;
     while (d < maxDist) {

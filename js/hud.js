@@ -49,9 +49,9 @@ export function updateHud() {
   const m = player.riding;
   if (m) {
     setText(statusEl, m.kind === 'dragon'
-      ? `Riding ${m.label}\nSpace: take off / fly up · Shift: dive\nE: get off`
+      ? `Riding ${m.label}\nSpace: take off / fly up · Shift: dive\nLeft click (hold): breathe fire · B: barrel roll (flying)\nE: get off`
       : m.kind === 'unicorn'
-      ? `Riding ${m.label}\nSpace: fly up · Shift: fly down\nE: get off`
+      ? `Riding ${m.label}\nSpace: fly up · Shift: fly down\nB: barrel roll (flying) · E: get off`
       : `Riding ${m.label}\nSpace: jump · E: get off`);
     setText(promptEl, '');
   } else {

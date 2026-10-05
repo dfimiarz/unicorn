@@ -5,7 +5,7 @@ import { B } from './blocks.js';
 import { rand, columnTop, getBlock } from './world.js';
 import { scene } from './render.js';
 import { Entity, physics, accelerate } from './physics.js';
-import { box, pivot, fixed, shade, bake, nameTag, LEATHER, GOLD } from './modelkit.js';
+import { box, pivot, fixed, shade, bake, nameTag, barrelRoll, LEATHER, GOLD } from './modelkit.js';
 import { spawnParticle } from './particles.js';
 import { player } from './player.js';
 import { state } from './state.js';
@@ -14,121 +14,128 @@ const tmp = new THREE.Vector3();
 
 // Dragon rig, built like a winged T-rex: root → body pivot at the hips, balanced over two big
 // bird-like hind legs (hip → knee → ankle → toes), a long tail held out behind as a counterweight,
-// a neck chain → big head → jaw, and two bat-like wings on the back (no front legs, like a wyvern):
-// shoulder → arm membrane, elbow → a fan of finger bones with membrane between them. The membranes
-// sit in their own groups so folding can squash them flat along the bones.
+// a neck chain → big head → jaw, and two big feathered wings on the back (no front legs, like a
+// wyvern): shoulder → arm with its feathers, elbow → hand with a fan of long flight feathers. The
+// feathers sit in their own groups so folding can gather them in along the bones.
 const DRAGON_HIP_Y = 1.5;
 const DRAGON_LEG = [0.6, 0.65, 0.4]; // thigh, shin, and the long upright foot bone (ankle to toes)
 const DRAGON_NECK_REST = [0.7, 0.2, -0.3], DRAGON_NECK_FLY = [0.15, 0.02, -0.06];
 const DRAGON_HEAD_Z = -0.38;
-const DRAGON_ARM = 1.5, DRAGON_FINGERS = [[0.12, 2.3], [0.55, 2.05], [0.98, 1.65], [1.4, 1.25]]; // [angle back from the leading edge, length]
+const DRAGON_ARM = 1.8, DRAGON_HAND = 1.1;
 const CLAW = 0xf2ead2, MOUTH = 0x7a2228;
+// Overlapping scales on one side (s = -1 left, +1 right) of a part whose side face is at x = s*x:
+// staggered rows of thin plates over y0..y1 and z0..z1, every other row set half a scale along
+// like roof tiles, in a few shades of the body colour.
+function scales(s, x, y0, y1, z0, z1, rows, cols, colors, parent) {
+  const dy = (y1 - y0) / rows, dz = (z1 - z0) / cols;
+  for (let r = 0; r < rows; r++) {
+    const shift = r % 2 ? 0.5 : 0;
+    for (let k = 0; k < cols - shift * 2; k++)
+      box(0.016, dy * 0.82, dz * 0.82, colors[(r + 2 * k) % colors.length], s * (x + 0.008), y0 + (r + 0.5) * dy, z0 + (k + 0.5 + shift) * dz, parent);
+  }
+}
+
 function makeDragonModel(c) {
   const root = new THREE.Group();
   const body = pivot(0, DRAGON_HIP_Y, 0, root);
   const dark = shade(c.body, 0.78);
+  const scaleCols = [shade(c.body, 0.85), shade(c.body, 1.12), shade(c.body, 0.95)];
 
-  // hind legs: a heavy drumstick thigh angled forward, a shin angled back, then a long foot bone
-  // standing up on three forward toes and a small back toe
+  // hind legs: a drumstick thigh, a shin angled back, then a long foot bone standing up on three
+  // forward toes and a small back toe
   const legs = [];
   for (const s of [-1, 1]) {
-    const hip = pivot(s * 0.5, 0, 0, body);
-    box(0.46, 0.6, 0.72, c.body, 0, -0.18, 0.02, hip);
-    box(0.36, 0.3, 0.48, c.body, 0, -0.5, 0, hip);
-    box(0.48, 0.1, 0.4, dark, 0, 0.1, 0.06, hip);
+    const hip = pivot(s * 0.38, 0, 0, body);
+    box(0.34, 0.6, 0.6, c.body, 0, -0.18, 0.02, hip);
+    box(0.26, 0.3, 0.4, c.body, 0, -0.5, 0, hip);
+    scales(s, 0.17, -0.42, 0.08, -0.22, 0.26, 3, 3, scaleCols, hip);
     const knee = pivot(0, -0.6, 0, hip);
-    box(0.28, 0.7, 0.34, c.body, 0, -0.32, 0.03, knee);
-    box(0.3, 0.3, 0.38, c.body, 0, -0.12, 0.05, knee);           // calf
-    box(0.26, 0.1, 0.12, dark, 0, -0.05, -0.12, knee);
+    box(0.22, 0.7, 0.28, c.body, 0, -0.32, 0.03, knee);
+    for (let j = 0; j < 4; j++) box(0.18, 0.13, 0.016, j % 2 ? dark : shade(dark, 1.15), 0, -0.1 - j * 0.15, -0.118, knee); // scutes
     const ankle = pivot(0, -0.65, 0, knee);
-    box(0.2, 0.44, 0.2, c.body, 0, -0.2, 0, ankle);
-    box(0.21, 0.38, 0.03, dark, 0, -0.2, -0.1, ankle);           // scales down the front
-    box(0.12, 0.1, 0.14, dark, 0, 0.0, 0.1, ankle);              // heel spur
+    box(0.16, 0.44, 0.16, dark, 0, -0.2, 0, ankle);
+    for (let j = 0; j < 3; j++) box(0.13, 0.11, 0.016, j % 2 ? shade(dark, 0.9) : shade(dark, 1.2), 0, -0.07 - j * 0.13, -0.088, ankle);
     const toes = pivot(0, -0.4, 0, ankle);
     for (let k = -1; k <= 1; k++) {
-      const t = fixed(k * 0.1, 0, 0, toes);
+      const t = fixed(k * 0.09, 0, 0, toes);
       t.rotation.y = -k * 0.3;
-      box(0.09, 0.08, 0.38, c.body, 0, -0.04, -0.17, t);
-      box(0.07, 0.08, 0.12, CLAW, 0, -0.05, -0.41, t);
+      box(0.08, 0.08, 0.36, c.body, 0, -0.04, -0.16, t);
+      box(0.06, 0.07, 0.1, CLAW, 0, -0.05, -0.39, t);
     }
-    box(0.07, 0.07, 0.18, c.body, 0, -0.045, 0.1, toes);
-    box(0.05, 0.06, 0.08, CLAW, 0, -0.05, 0.22, toes);
+    box(0.06, 0.06, 0.18, c.body, 0, -0.045, 0.1, toes);
     legs.push({ hip, knee, ankle, toes });
   }
 
-  // torso: hips, a level body and a deep chest, belly plates, flank scales and a row of spikes
-  box(0.8, 0.75, 0.6, c.body, 0, 0.12, 0.05, body);
-  box(0.84, 0.8, 1.3, c.body, 0, 0.12, -0.75, body);
-  box(0.78, 0.86, 0.35, c.body, 0, 0.05, -1.5, body);
-  box(0.66, 0.12, 0.6, c.body, 0, 0.56, -1.05, body);
-  box(0.56, 0.6, 0.05, c.belly, 0, 0.0, -1.69, body);
-  for (let i = 0; i < 6; i++) box(0.6, 0.06, 0.24, i % 2 ? c.belly : shade(c.belly, 0.9), 0, -0.3, -0.1 - i * 0.26, body);
-  for (const s of [-1, 1]) for (let i = 0; i < 6; i++)
-    box(0.012, 0.14, 0.22, i % 2 ? dark : shade(c.body, 0.88), s * 0.425, (i % 2) * 0.2, 0.1 - i * 0.27, body);
-  for (let i = 0; i < 7; i++) {
-    if (i >= 2 && i <= 4) continue; // the saddle sits here
+  // torso: hips, a level body and chest, scaly flanks, belly plates and a row of spikes down the back
+  box(0.58, 0.72, 0.6, c.body, 0, 0.12, 0.05, body);
+  box(0.62, 0.8, 1.3, c.body, 0, 0.12, -0.75, body);
+  box(0.56, 0.84, 0.35, c.body, 0, 0.05, -1.5, body);
+  box(0.42, 0.6, 0.05, c.belly, 0, 0.0, -1.69, body);
+  for (const s of [-1, 1]) {
+    scales(s, 0.31, -0.24, 0.22, -1.38, -0.12, 3, 8, scaleCols, body);
+    scales(s, 0.31, 0.24, 0.5, -1.38, -0.88, 2, 3, scaleCols, body); // in front of the saddle
+  }
+  for (let i = 0; i < 5; i++) box(0.44, 0.06, 0.22, i % 2 ? c.belly : shade(c.belly, 0.9), 0, -0.3, -0.2 - i * 0.26, body);
+  for (const i of [0, 1, 5, 6]) { // the saddle sits in the gap
     const h = 0.16 + 0.06 * Math.sin(i / 6 * Math.PI);
     box(0.06, h, 0.16, c.spike, 0, 0.52 + h / 2, 0.25 - i * 0.27, body);
   }
 
-  // saddle: a blanket draped over the back with a gold trim, a seat with a high pommel to hold on
-  // to and a cantle behind, a girth strap round the belly, and stirrups
+  // saddle: a blanket over the back, a seat with a pommel to hold on to and a cantle behind, a girth
+  // strap round the belly, and stirrups
   const blanket = shade(c.wing, 0.7);
-  box(0.9, 0.04, 0.8, blanket, 0, 0.53, -0.45, body);
+  box(0.68, 0.04, 0.8, blanket, 0, 0.53, -0.45, body);
   for (const s of [-1, 1]) {
-    box(0.03, 0.3, 0.8, blanket, s * 0.445, 0.39, -0.45, body);
-    box(0.034, 0.03, 0.82, GOLD, s * 0.447, 0.245, -0.45, body);
-    box(0.04, 0.8, 0.08, LEATHER, s * 0.44, 0.12, -0.45, body);
-    box(0.03, 0.42, 0.04, LEATHER, s * 0.47, 0.3, -0.4, body);
-    box(0.1, 0.03, 0.14, GOLD, s * 0.49, 0.09, -0.4, body);
+    box(0.03, 0.3, 0.8, blanket, s * 0.325, 0.39, -0.45, body);
+    box(0.034, 0.03, 0.82, GOLD, s * 0.327, 0.245, -0.45, body);
+    box(0.03, 0.42, 0.04, LEATHER, s * 0.35, 0.3, -0.4, body);
+    box(0.1, 0.03, 0.14, GOLD, s * 0.37, 0.09, -0.4, body);
   }
-  box(0.86, 0.04, 0.08, LEATHER, 0, -0.34, -0.45, body);
-  box(0.56, 0.1, 0.56, LEATHER, 0, 0.6, -0.45, body);
-  box(0.26, 0.18, 0.1, LEATHER, 0, 0.72, -0.74, body);
-  box(0.22, 0.04, 0.04, GOLD, 0, 0.83, -0.74, body);
-  box(0.44, 0.16, 0.08, LEATHER, 0, 0.71, -0.17, body);
-  box(0.45, 0.03, 0.09, GOLD, 0, 0.8, -0.17, body);
+  box(0.66, 0.04, 0.08, LEATHER, 0, -0.32, -0.45, body);
+  box(0.5, 0.1, 0.56, LEATHER, 0, 0.6, -0.45, body);
+  box(0.24, 0.18, 0.1, LEATHER, 0, 0.72, -0.74, body);
+  box(0.4, 0.16, 0.08, LEATHER, 0, 0.71, -0.17, body);
   const seat = pivot(0, 0.68, -0.45, body);
 
-  // neck: a short, thick chain rising from the chest
+  // neck: a short chain rising from the chest
   const neckSegs = [];
   let parent = pivot(0, 0.3, -1.6, body);
   for (let i = 0; i < 3; i++) {
-    const seg = pivot(0, 0, i ? -0.38 : 0, parent), w = 0.52 - i * 0.04;
+    const seg = pivot(0, 0, i ? -0.38 : 0, parent), w = 0.42 - i * 0.04;
     box(w, w * 0.95, 0.44, c.body, 0, 0, -0.19, seg);
     box(w * 0.7, 0.05, 0.32, c.belly, 0, -w * 0.48, -0.19, seg);
     box(0.05, 0.14, 0.12, c.spike, 0, w * 0.48 + 0.06, -0.19, seg);
+    for (const s of [-1, 1]) scales(s, w / 2, -w * 0.3, w * 0.3, -0.36, -0.02, 2, 3, scaleCols, seg);
     neckSegs.push(seg);
     parent = seg;
   }
 
   // a big T-rex head
   const head = pivot(0, 0, DRAGON_HEAD_Z, parent);
-  box(0.58, 0.46, 0.58, c.body, 0, 0.08, -0.22, head);               // skull
-  box(0.44, 0.28, 0.62, c.body, 0, 0.02, -0.76, head);               // snout
-  box(0.16, 0.05, 0.52, dark, 0, 0.18, -0.7, head);                  // ridge along the snout
+  box(0.5, 0.44, 0.56, c.body, 0, 0.08, -0.22, head);                // skull
+  box(0.38, 0.28, 0.62, c.body, 0, 0.02, -0.76, head);               // snout
+  for (let k = 0; k < 3; k++) box(0.14, 0.016, 0.12, k % 2 ? dark : shade(dark, 1.15), 0, 0.168, -0.56 - k * 0.16, head); // scutes
   for (const s of [-1, 1]) {
-    box(0.14, 0.09, 0.34, dark, s * 0.2, 0.33, -0.27, head);          // brow
-    box(0.07, 0.05, 0.03, 0x1a0e0a, s * 0.12, 0.1, -1.075, head);     // nostril
-    for (let k = 0; k < 4; k++) box(0.035, 0.07, 0.035, CLAW, s * 0.19, -0.14, -0.55 - k * 0.14, head); // fangs
-    for (let k = 0; k < 3; k++) box(0.03, 0.16 - k * 0.03, 0.12, c.wing, s * 0.3, 0.04 - k * 0.09, -0.02 + k * 0.07, head); // cheek frills
-    // horns sweep back and a little outward, in three tapering pieces
-    const h1 = fixed(s * 0.19, 0.3, -0.02, head);
+    box(0.12, 0.09, 0.32, dark, s * 0.18, 0.32, -0.27, head);         // brow
+    box(0.06, 0.05, 0.03, 0x1a0e0a, s * 0.1, 0.1, -1.075, head);      // nostril
+    scales(s, 0.25, -0.12, 0.1, -0.46, -0.04, 2, 3, scaleCols, head);  // cheeks
+    scales(s, 0.19, -0.06, 0.14, -1.0, -0.5, 2, 4, scaleCols, head);   // along the snout
+    for (let k = 0; k < 2; k++) box(0.035, 0.07, 0.035, CLAW, s * 0.16, -0.14, -0.6 - k * 0.24, head); // fangs
+    // horns sweep back and a little outward, in two tapering pieces
+    const h1 = fixed(s * 0.16, 0.28, -0.02, head);
     h1.rotation.set(1.0, 0, -s * 0.3);
-    box(0.12, 0.28, 0.12, c.horn, 0, 0.13, 0, h1);
-    const h2 = fixed(0, 0.27, 0, h1);
+    box(0.11, 0.3, 0.11, c.horn, 0, 0.14, 0, h1);
+    const h2 = fixed(0, 0.28, 0, h1);
     h2.rotation.x = 0.35;
-    box(0.085, 0.24, 0.085, c.horn, 0, 0.11, 0, h2);
-    box(0.05, 0.18, 0.05, shade(c.horn, 0.85), 0, 0.3, 0, h2);
+    box(0.07, 0.3, 0.07, shade(c.horn, 0.88), 0, 0.14, 0, h2);
   }
   const jaw = pivot(0, -0.13, -0.18, head);
-  box(0.4, 0.14, 0.86, c.body, 0, -0.05, -0.42, jaw);
-  box(0.3, 0.03, 0.74, c.belly, 0, -0.13, -0.4, jaw);
-  box(0.32, 0.02, 0.72, MOUTH, 0, 0.022, -0.44, jaw);
-  for (const s of [-1, 1]) for (let k = 0; k < 3; k++) box(0.035, 0.06, 0.035, CLAW, s * 0.16, 0.05, -0.75 + k * 0.16, jaw);
+  box(0.34, 0.14, 0.86, c.body, 0, -0.05, -0.42, jaw);
+  box(0.28, 0.02, 0.72, MOUTH, 0, 0.022, -0.44, jaw);
+  for (const s of [-1, 1]) for (let k = 0; k < 2; k++) box(0.035, 0.06, 0.035, CLAW, s * 0.14, 0.05, -0.72 + k * 0.24, jaw);
   const eyes = [];
   for (const s of [-1, 1]) {
-    const eye = box(0.04, 0.11, 0.15, c.eye, s * 0.29, 0.19, -0.33, head);
+    const eye = box(0.04, 0.11, 0.15, c.eye, s * 0.25, 0.19, -0.33, head);
     eye.userData.bake = false; // kept separate so it can blink
     box(0.012, 0.1, 0.03, 0x111111, s * 0.022, 0, 0, eye); // slit pupil
     eyes.push(eye);
@@ -139,17 +146,16 @@ function makeDragonModel(c) {
   const tailSegs = [];
   parent = tail;
   for (let i = 0; i < 8; i++) {
-    const seg = pivot(0, 0, i ? 0.42 : 0, parent), w = 0.06 + 0.5 * (1 - i / 8);
+    const seg = pivot(0, 0, i ? 0.42 : 0, parent), w = 0.06 + 0.4 * (1 - i / 8);
     box(w, w * 0.9, 0.46, c.body, 0, 0, 0.21, seg);
-    box(w * 0.7, 0.04, 0.34, c.belly, 0, -w * 0.45, 0.21, seg);
     box(0.05, 0.08 + w * 0.2, 0.14, c.spike, 0, w * 0.45 + 0.05, 0.21, seg);
+    if (i < 6) for (const s of [-1, 1]) scales(s, w / 2, -w * 0.3, w * 0.3, 0.02, 0.4, 2, 3, scaleCols, seg);
     tailSegs.push(seg);
     parent = seg;
   }
   const spade = fixed(0, 0, 0.55, parent);
   spade.rotation.y = Math.PI / 4;
-  box(0.36, 0.04, 0.36, c.wing, 0, 0, 0, spade);
-  box(0.2, 0.06, 0.2, c.spike, 0, 0, 0, spade);
+  box(0.34, 0.04, 0.34, c.wing, 0, 0, 0, spade);
 
   const wings = [makeDragonWing(-1, body, c), makeDragonWing(1, body, c)];
 
@@ -158,38 +164,50 @@ function makeDragonModel(c) {
   return { root, body, seat, legs, neckSegs, head, jaw, eyes, tail, tailSegs, wings };
 }
 
-// Bat-like wing (s = -1 left, +1 right). Local frame: span along s*x, membrane trails toward +z.
+// One feather lying flat in the wing, rooted at (x, y, z) and pointing `dir` radians back from
+// straight out along the span (π/2 points straight back): a vane with a narrower, darker tip and a
+// quill down the middle.
+function dragonFeather(s, x, y, z, len, w, dir, vane, tip, quill, parent) {
+  const f = fixed(x, y, z, parent);
+  f.rotation.y = -s * dir;
+  box(len * 0.78, 0.024, w, vane, s * len * 0.39, 0, 0, f);
+  box(len * 0.24, 0.024, w * 0.72, tip, s * len * 0.88, 0, 0, f);
+  box(len * 0.9, 0.034, 0.035, quill, s * len * 0.45, 0.006, 0, f);
+}
+
+// Feathered wing (s = -1 left, +1 right). Local frame: span along s*x, feathers trail toward +z.
 // Shoulder rotation order YXZ = flap (z), then twist (x), then sweep (y), like the unicorn's wings.
+// Layered like a bird's: a row of small scaly coverts along each bone, longer coverts below them,
+// then the flight feathers: broad secondaries off the arm and long primaries fanning out from the
+// hand, spreading apart into slotted fingers at the tip.
 function makeDragonWing(s, parent, c) {
-  const A = DRAGON_ARM;
-  const shoulder = pivot(s * 0.36, 0.5, -1.0, parent);
+  const A = DRAGON_ARM, H = DRAGON_HAND;
+  const vane = [c.wing, shade(c.wing, 0.9)], tip = shade(c.wing, 0.62), quill = shade(c.wing, 1.35);
+  const covert = shade(c.wing, 0.8), lesser = shade(c.body, 1.08);
+  const shoulder = pivot(s * 0.28, 0.5, -1.0, parent);
   shoulder.rotation.order = 'YXZ';
-  box(0.55, 0.24, 0.24, c.body, s * 0.27, 0, 0, shoulder);
-  box(A, 0.15, 0.15, c.body, s * A / 2, 0, 0, shoulder);
-  const armMem = pivot(0, 0, 0, shoulder);
-  box(A, 0.025, 1.0, c.wing, s * A / 2, -0.02, 0.52, armMem);
-  box(0.9, 0.025, 0.45, c.wing, s * 0.45, -0.02, 1.24, armMem);
+  box(0.46, 0.2, 0.2, c.body, s * 0.2, 0, 0, shoulder);
+  box(A, 0.12, 0.12, c.body, s * A / 2, 0, 0, shoulder);
+  const armFeathers = pivot(0, 0, 0, shoulder);
+  for (let i = 0; i < 9; i++) {
+    const t = i / 8, x = s * (0.12 + t * (A - 0.2));
+    dragonFeather(s, x, -0.02 - (i % 2) * 0.012, 0.04, 1.75 - 0.3 * t, 0.3, Math.PI / 2 - 0.1 - 0.25 * t, vane[i % 2], tip, quill, armFeathers);
+    dragonFeather(s, x, 0.02, 0.02, 0.8 - 0.1 * t, 0.26, Math.PI / 2 - 0.15 - 0.25 * t, covert, covert, quill, armFeathers);
+    if (i < 8) dragonFeather(s, x + s * 0.1, 0.045, 0, 0.38, 0.24, Math.PI / 2 - 0.2, lesser, lesser, lesser, armFeathers);
+  }
+
   const elbow = pivot(s * A, 0, 0, shoulder);
   elbow.rotation.order = 'YXZ';
-  box(0.2, 0.2, 0.2, c.body, 0, 0, 0, elbow);
+  box(0.18, 0.18, 0.18, c.body, 0, 0, 0, elbow);
   box(0.07, 0.14, 0.18, CLAW, s * 0.04, 0.11, -0.11, elbow); // thumb claw
+  box(H, 0.1, 0.1, c.body, s * H / 2, 0, 0, elbow);
   const fan = pivot(0, 0, 0, elbow);
-  DRAGON_FINGERS.forEach(([a, len], i) => {
-    const f = fixed(0, 0, 0, fan);
-    f.rotation.y = -s * a;
-    box(len, 0.09, 0.09, shade(c.body, 0.9), s * len / 2, 0.01, 0, f);
-    if (i === 0) box(0.16, 0.07, 0.07, CLAW, s * (len + 0.06), 0.01, 0, f);
-    if (i === DRAGON_FINGERS.length - 1) return;
-    // membrane between this finger and the next, built as a stepped triangle out to the shorter one
-    const [a2, len2] = DRAGON_FINGERS[i + 1], half = (a2 - a) / 2, L = Math.min(len, len2) * 0.97;
-    const p = fixed(0, 0, 0, fan);
-    p.rotation.y = -s * (a + half);
-    for (let j = 0; j < 4; j++) {
-      const r0 = j * L / 4, r1 = (j + 1) * L / 4;
-      box(r1 - r0 + 0.02, 0.02, 2 * r1 * Math.tan(half) + 0.04, j % 2 ? c.wing : shade(c.wing, 0.93), s * (r0 + r1) / 2, -0.01, 0, p);
-    }
-  });
-  return { shoulder, elbow, armMem, fan, s };
+  for (let i = 0; i < 8; i++) {
+    const t = i / 7, x = s * (0.05 + t * (H - 0.05)), dir = 1.3 - 1.2 * t ** 1.2;
+    dragonFeather(s, x, -0.02 - (i % 2) * 0.012, 0.03, 1.75 + 0.6 * t, 0.32 - 0.06 * t, dir, vane[i % 2], tip, quill, fan);
+    if (i < 7) dragonFeather(s, x, 0.02, 0.02, 0.7 - 0.2 * t, 0.24, dir - 0.05, covert, covert, quill, fan);
+  }
+  return { shoulder, elbow, armFeathers, fan, s };
 }
 
 // Walking like a big bird: the feet take turns, each planted on the ground while the body passes
@@ -240,15 +258,15 @@ function animateDragonWings(d, dt, takeoffC) {
   for (const w of d.model.wings) {
     const s = w.s;
     // folded: the arm rises up and back so the wrist peaks above the shoulders, and the hand runs
-    // back down to a wingtip beside the tail. Both membranes are rolled into the plane of that
-    // triangle and only partly gathered in, so the folded wing drapes down the side as a big sail.
+    // back down to a wingtip beside the tail. The feathers are gathered in toward the bones, so the
+    // folded wing drapes down the side as a big feathered cloak.
     w.shoulder.rotation.set(
       open * d.wingAmp * 0.15 * Math.cos(d.wingP) + 0.61 * f,
       s * 0.24 * f,
       s * (open * (d.wingDihedral + d.wingAmp * beat) + 1.4 * f));
     w.elbow.rotation.set(0, -s * 1.71 * f, s * open * d.wingAmp * 0.5 * Math.sin(d.wingP - 0.9));
     w.fan.scale.z = 1 - 0.35 * f;
-    w.armMem.scale.z = 1 - 0.3 * f;
+    w.armFeathers.scale.z = 1 - 0.3 * f;
   }
   return -beat * 0.1 * d.wingAmp * open;
 }
@@ -338,12 +356,16 @@ function animateDragon(d, dt) {
     }
     if (s >= 1 || d.state !== 'idle') d.idle = null;
   }
+  // breathing fire (left mouse button held while ridden): jaws open wide
+  d.fireW += ((d.breathing && d.rider ? 1 : 0) - d.fireW) * Math.min(1, dt * 8);
+  jawOpen = Math.max(jawOpen, 0.6 * d.fireW);
 
   bob += animateDragonWings(d, dt, takeoffC);
 
   // apply
-  md.body.position.y = DRAGON_HIP_Y + bob + Math.sin(state.time * 1.6 + d.breath) * 0.012;
+  md.body.position.set(0, DRAGON_HIP_Y + bob + Math.sin(state.time * 1.6 + d.breath) * 0.012, 0);
   md.body.rotation.set(pitch, sway, roll);
+  barrelRoll(d, dt, md.body, 0.12); // about the middle of the torso
   let neckPitch = 0;
   md.neckSegs.forEach((s, i) => {
     s.rotation.x = DRAGON_NECK_REST[i] + (DRAGON_NECK_FLY[i] - DRAGON_NECK_REST[i]) * d.flyW + headUp * 0.4
@@ -351,11 +373,10 @@ function animateDragon(d, dt) {
     s.rotation.y = neckYaw / 3 - sway * 0.8;
     neckPitch += s.rotation.x;
   });
-  // keep the head roughly level whatever the neck and body are doing; while walking it holds still
-  // in the air then darts forward on each step, like a chicken's
+  // keep the head roughly level whatever the neck and body are doing; while walking it bobs gently
+  // back and forth with each step, less so at a run
   md.head.rotation.x = -(neckPitch + pitch) * 0.8 + headUp;
-  const step = (d.phase * 2) % 1, hold = step < 0.75 ? step / 0.75 : 1 - (step - 0.75) / 0.25;
-  md.head.position.z = DRAGON_HEAD_Z + (hold - 0.5) * 0.24 * walkAmt;
+  md.head.position.z = DRAGON_HEAD_Z + Math.sin(2 * P) * 0.06 * walkAmt * (1 - 0.6 * run);
   md.jaw.rotation.x = -jawOpen;
 
   // tail held out level as a counterweight, swinging against the hips; streams straight out in flight
@@ -374,6 +395,26 @@ function animateDragon(d, dt) {
   md.root.rotation.y = d.yaw;
   md.root.updateMatrixWorld(true);
   md.seat.getWorldPosition(d.seatWorld);
+  if (d.fireW > 0.6) breatheFire(d, dt);
+  else d.fireAcc = 0;
+}
+
+// A roaring stream of flame from the open jaws, along the way the head points, with a little
+// smoke. Flames rise as they go, and are thrown along at the dragon's own speed too.
+const FIRE_RATE = 90; // particles a second
+const FIRE_COLORS = [0xfff3a0, 0xffd23a, 0xffb02a, 0xff8a2a, 0xff5a1a, 0xe8341a];
+const fireFrom = new THREE.Vector3(), fireDir = new THREE.Vector3();
+function breatheFire(d, dt) {
+  const head = d.model.head;
+  head.localToWorld(fireFrom.set(0, -0.08, -1.1));
+  head.localToWorld(fireDir.set(0, -0.08, -2.1)).sub(fireFrom).normalize();
+  for (d.fireAcc += dt * FIRE_RATE; d.fireAcc >= 1; d.fireAcc--) {
+    const sp = rnd(11, 15), smoke = Math.random() < 0.12;
+    spawnParticle(fireFrom,
+      fireDir.x * sp + d.vel.x + rnd(-1.2, 1.2), fireDir.y * sp + d.vel.y + rnd(-1.2, 1.2), fireDir.z * sp + d.vel.z + rnd(-1.2, 1.2),
+      smoke ? 0x6e6e6e : FIRE_COLORS[Math.floor(Math.random() * FIRE_COLORS.length)],
+      rnd(0.4, 0.7), smoke ? -2.5 : -1.5, rnd(2.2, 3.8));
+  }
 }
 
 const DRAGON_HOME_RADIUS = 55; // flying dragons turn back toward the island past this
@@ -492,7 +533,8 @@ export function makeDragon(c, p) {
     state: 'idle', stateT: 0, aiTimer: 1 + rand() * 3, turnCd: 0, stuckT: 0, cruise: 12, groundY: p.y,
     phase: 0, flyW: 0, reachW: 0, fvy: 0, landT: 0, turn: 0, idle: null, idleT: 0, idleCd: 2 + Math.random() * 4, lookTo: 0,
     blinkT: Math.random() * 4, breath: Math.random() * 6, glideT: 0, flapping: false,
-    wingFold: 1, wingAmp: 0, wingFreq: 1, wingDihedral: 0.12, wingP: 0,
+    wingFold: 1, wingAmp: 0, wingFreq: 1, wingDihedral: 0.12, wingP: 0, roll: null, barrel: 0,
+    breathing: false, fireW: 0, fireAcc: 0,
   });
   d.pos.copy(p);
   d.yaw = d.wanderYaw = d.prevYaw = rand() * Math.PI * 2;

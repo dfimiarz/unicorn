@@ -1,8 +1,8 @@
 import { renderer } from './render.js';
 import { state } from './state.js';
 
-// Keyboard state, pointer lock and mouse look. What the keys do is in controls.js.
-export const keys = {};
+// Keyboard and mouse button state, pointer lock and mouse look. What the keys do is in controls.js.
+export const keys = {}; // held keys by code, and mouse buttons as Mouse0 (left), Mouse2 (right)
 const overlay = document.getElementById('overlay');
 export const isLocked = () => document.pointerLockElement === renderer.domElement;
 overlay.addEventListener('click', () => renderer.domElement.requestPointerLock());
@@ -17,6 +17,8 @@ addEventListener('keydown', e => {
   if (isLocked() && e.code === 'Space') e.preventDefault();
 });
 addEventListener('keyup', e => { keys[e.code] = false; });
+addEventListener('mousedown', e => { keys['Mouse' + e.button] = true; });
+addEventListener('mouseup', e => { keys['Mouse' + e.button] = false; });
 addEventListener('mousemove', e => {
   if (!isLocked()) return;
   state.yaw -= e.movementX * 0.0025;

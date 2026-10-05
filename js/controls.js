@@ -50,6 +50,12 @@ addEventListener('keydown', e => {
     else { const m = nearestMob(); if (m) mount(m); }
   }
   if (e.code === 'KeyV') state.camMode = 1 - state.camMode;
+  if (e.code === 'KeyB') {
+    // a barrel roll, only while flying: toward the right if D is held, otherwise to the left
+    const m = player.riding;
+    const flying = m && (m.kind === 'dragon' ? m.state === 'fly' : m.kind === 'unicorn' && m.airTime > 0.25);
+    if (flying && !m.roll) m.roll = { t: 0, dir: keys.KeyD || keys.ArrowRight ? -1 : 1 };
+  }
   if (e.code.startsWith('Digit')) {
     const n = +e.code.slice(5);
     if (n >= 1 && n <= HOTBAR.length) selectSlot(n - 1);
@@ -57,7 +63,7 @@ addEventListener('keydown', e => {
 });
 addEventListener('mousedown', e => {
   if (!isLocked()) return;
-  if (e.button === 0) breakBlock();
+  if (e.button === 0 && player.riding?.kind !== 'dragon') breakBlock(); // on a dragon it breathes fire instead
   if (e.button === 2) placeBlock();
 });
 addEventListener('wheel', e => {
@@ -85,6 +91,7 @@ export function updatePlayer(dt) {
   const m = player.riding;
   if (m && m.rearT > 0) { mx = mz = 0; } // hold on while it rears
   if (m && m.kind === 'dragon') {
+    m.breathing = locked && keys.Mouse0;
     rideDragon(m, dt, mx, mz, f < 0, space, shift);
     player.pos.copy(m.pos);
     player.vel.set(0, 0, 0);
