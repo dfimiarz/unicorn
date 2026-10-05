@@ -1,0 +1,2638 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Unicorn Craft</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #8ecdf5; font-family: "Courier New", monospace; user-select: none; }
+  canvas { display: block; }
+  #crosshair { position: fixed; left: 50%; top: 50%; width: 20px; height: 20px; transform: translate(-50%, -50%); pointer-events: none; }
+  #crosshair::before, #crosshair::after { content: ""; position: absolute; background: #fff; box-shadow: 0 0 2px #000; }
+  #crosshair::before { left: 9px; top: 0; width: 2px; height: 20px; }
+  #crosshair::after { top: 9px; left: 0; width: 20px; height: 2px; }
+  #hotbar { position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%); display: flex; gap: 4px; padding: 4px; background: rgba(0,0,0,.45); border: 2px solid #222; }
+  .slot { width: 44px; height: 44px; border: 3px solid #777; position: relative; background: rgba(80,80,80,.6); box-sizing: border-box; }
+  .slot.sel { border-color: #fff; }
+  .slot canvas { width: 28px; height: 28px; margin: 5px; image-rendering: pixelated; }
+  .slot span { position: absolute; left: 2px; top: 0; font-size: 10px; color: #fff; text-shadow: 1px 1px #000; }
+  .hud { position: fixed; color: #fff; text-shadow: 2px 2px #000; font-size: 15px; line-height: 1.5; white-space: pre-line; pointer-events: none; }
+  #status { top: 10px; left: 12px; }
+  #score { top: 10px; right: 12px; text-align: right; }
+  #hint { bottom: 14px; left: 12px; font-size: 12px; opacity: .85; }
+  #clock { top: 10px; left: 50%; transform: translateX(-50%); font-size: 17px; }
+  #prompt { bottom: 82px; left: 50%; transform: translateX(-50%); font-size: 18px; white-space: nowrap; }
+  #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(30,10,50,.55); cursor: pointer; }
+  .panel { background: rgba(0,0,0,.7); color: #fff; padding: 28px 36px; border: 4px solid #fff; max-width: 520px; text-align: center; }
+  .panel h1 { margin: 0 0 6px; font-size: 44px; letter-spacing: 2px;
+    background: linear-gradient(90deg,#ff5050,#ffa03c,#ffe650,#64dc64,#5aa0ff,#b46eff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .panel .go { font-size: 22px; margin: 14px 0 18px; animation: blink 1.2s infinite; }
+  @keyframes blink { 50% { opacity: .4; } }
+  .panel table { margin: 0 auto; text-align: left; font-size: 14px; border-spacing: 12px 3px; }
+  .panel td:first-child { color: #ffe650; text-align: right; }
+</style>
+</head>
+<body>
+<div id="crosshair"></div>
+<div id="status" class="hud"></div>
+<div id="score" class="hud"></div>
+<div id="clock" class="hud"></div>
+<div id="prompt" class="hud"></div>
+<div id="hint" class="hud">E ride · V camera · T time · Esc pause</div>
+<div id="hotbar"></div>
+<div id="overlay">
+  <div class="panel">
+    <h1>UNICORN CRAFT</h1>
+    <div>Find the horses, unicorns and dragons, then ride them!</div>
+    <div class="go" id="go">Click to play</div>
+    <table>
+      <tr><td>Mouse</td><td>Look around</td></tr>
+      <tr><td>W A S D</td><td>Move (Shift to sprint)</td></tr>
+      <tr><td>Space</td><td>Jump · Swim · Fly (unicorns and dragons have wings!)</td></tr>
+      <tr><td>Shift</td><td>Fly down (on a unicorn or dragon)</td></tr>
+      <tr><td>E</td><td>Get on / get off a horse, unicorn or dragon</td></tr>
+      <tr><td>Left click</td><td>Break block</td></tr>
+      <tr><td>Right click</td><td>Place block</td></tr>
+      <tr><td>1–9 / wheel</td><td>Pick a block</td></tr>
+      <tr><td>V</td><td>First / third person view</td></tr>
+      <tr><td>T (hold)</td><td>Fast-forward time</td></tr>
+    </table>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
+// ---------------------------------------------------------------- config
+const H = 64, CH = 16; // world height, chunk width (CH must stay 16: block lookups use >> 4 and & 15)
+const RENDER_DIST = 8;  // chunks meshed around the player; the fog hides everything past ~130 blocks
+const CHUNK_BUDGET_MS = 4; // time per frame spent building newly visible chunks
+const MOB_ACTIVE_DIST = (RENDER_DIST - 1) * CH; // animals further away than this pause
+const WATER = 12;
+const GRAVITY = 28;
+const REACH = 6;
+
+// ---------------------------------------------------------------- random + noise
+let seed = 0; // picked below (see pickSeed), once the terrain functions exist
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function hash2(x, z) {
+  let h = Math.imul(x, 374761393) + Math.imul(z, 668265263) + seed;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+function hash3(x, y, z) {
+  let h = Math.imul(x, 374761393) + Math.imul(y, 1103515245) + Math.imul(z, 668265263) + seed;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+const smooth = t => t * t * (3 - 2 * t);
+function valueNoise(x, z) {
+  const xi = Math.floor(x), zi = Math.floor(z);
+  const u = smooth(x - xi), v = smooth(z - zi);
+  const a = hash2(xi, zi), b = hash2(xi + 1, zi), c = hash2(xi, zi + 1), d = hash2(xi + 1, zi + 1);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+function fbm(x, z, oct = 4) {
+  let s = 0, amp = 0.5, f = 1, norm = 0;
+  for (let i = 0; i < oct; i++) { s += valueNoise(x * f, z * f) * amp; norm += amp; amp *= 0.5; f *= 2; }
+  return s / norm;
+}
+const wrapAngle = a => { while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2; return a; };
+const lerpAngle = (a, b, t) => a + wrapAngle(b - a) * Math.min(1, t);
+
+// ---------------------------------------------------------------- blocks + textures
+const B = { AIR: 0, GRASS: 1, DIRT: 2, STONE: 3, SAND: 4, LOG: 5, PLANKS: 6, LEAVES: 7, BRICK: 8, RAINBOW: 9, BEDROCK: 10 };
+const BLOCK_NAMES = { 1: 'Grass', 2: 'Dirt', 3: 'Stone', 4: 'Sand', 5: 'Wood', 6: 'Planks', 7: 'Leaves', 8: 'Brick', 9: 'Rainbow' };
+const BLOCK_COLORS = { 1: 0x5f9f35, 2: 0x86604a, 3: 0x808080, 4: 0xdcd0a0, 5: 0x69523a, 6: 0xaa8852, 7: 0x377d28, 8: 0x9b4837, 9: 0xff80c0, 10: 0x333333 };
+const HOTBAR = [B.GRASS, B.DIRT, B.STONE, B.SAND, B.LOG, B.PLANKS, B.LEAVES, B.BRICK, B.RAINBOW];
+const RAINBOW_RGB = [[255, 80, 80], [255, 160, 60], [255, 230, 80], [100, 220, 100], [90, 160, 255], [180, 110, 255]];
+const RAINBOW_HEX = [0xff5050, 0xffa03c, 0xffe650, 0x64dc64, 0x5aa0ff, 0xb46eff];
+
+// face order: -x, +x, -y, +y, -z, +z
+function tileFor(t, f) {
+  switch (t) {
+    case B.GRASS: return f === 3 ? 0 : f === 2 ? 2 : 1;
+    case B.DIRT: return 2;
+    case B.STONE: return 3;
+    case B.SAND: return 4;
+    case B.LOG: return (f === 2 || f === 3) ? 6 : 5;
+    case B.LEAVES: return 7;
+    case B.PLANKS: return 8;
+    case B.BRICK: return 9;
+    case B.RAINBOW: return 10;
+    case B.BEDROCK: return 11;
+  }
+  return 3;
+}
+const ICON_TILE = { 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 8, 7: 7, 8: 9, 9: 10 };
+
+const TS = 16, NT = 12;
+const atlas = document.createElement('canvas');
+atlas.width = TS * NT; atlas.height = TS;
+const actx = atlas.getContext('2d');
+const trand = mulberry32(1234);
+const vary = (c, amt) => { const k = 1 + (trand() - 0.5) * amt; return [c[0] * k, c[1] * k, c[2] * k]; };
+function paint(tile, fn) {
+  const img = actx.createImageData(TS, TS);
+  for (let y = 0; y < TS; y++) for (let x = 0; x < TS; x++) {
+    const [r, g, b] = fn(x, y), i = (y * TS + x) * 4;
+    img.data[i] = r; img.data[i + 1] = g; img.data[i + 2] = b; img.data[i + 3] = 255;
+  }
+  actx.putImageData(img, tile * TS, 0);
+}
+const grassColor = () => vary([95, 159, 53], 0.3);
+const dirtColor = () => trand() < 0.1 ? vary([100, 70, 48], 0.2) : vary([134, 96, 67], 0.25);
+const grassEdge = Array.from({ length: TS }, () => 3 + Math.floor(trand() * 3));
+paint(0, grassColor);
+paint(1, (x, y) => y < grassEdge[x] ? grassColor() : dirtColor());
+paint(2, dirtColor);
+paint(3, () => trand() < 0.12 ? vary([100, 100, 100], 0.2) : vary([128, 128, 128], 0.2));
+paint(4, () => vary([220, 208, 160], 0.12));
+paint(5, x => vary(x % 4 === 0 ? [80, 62, 38] : [105, 82, 50], 0.2));
+paint(6, (x, y) => {
+  if (x === 0 || y === 0 || x === 15 || y === 15) return vary([90, 70, 42], 0.2);
+  const d = Math.hypot(x - 7.5, y - 7.5);
+  return vary(Math.floor(d) % 2 ? [165, 135, 85] : [140, 110, 65], 0.1);
+});
+paint(7, () => { const r = trand(); return r < 0.15 ? vary([30, 80, 25], 0.2) : r < 0.3 ? vary([80, 160, 60], 0.2) : vary([55, 125, 40], 0.25); });
+paint(8, (x, y) => {
+  const row = Math.floor(y / 4), seam = (x + row * 5) % 16 === 0;
+  return (y % 4 === 3 || seam) ? vary([110, 85, 50], 0.15) : vary([170, 136, 82], 0.12);
+});
+paint(9, (x, y) => {
+  const off = Math.floor(y / 4) % 2 ? 4 : 0;
+  return (y % 4 === 3 || (x + off) % 8 === 7) ? vary([190, 185, 175], 0.1) : vary([155, 72, 55], 0.2);
+});
+paint(10, (x, y) => vary(RAINBOW_RGB[Math.floor(y * 6 / 16)], 0.08));
+paint(11, () => trand() < 0.5 ? vary([40, 40, 40], 0.3) : vary([85, 85, 85], 0.3));
+
+const atlasTex = new THREE.CanvasTexture(atlas);
+atlasTex.magFilter = THREE.NearestFilter;
+atlasTex.minFilter = THREE.NearestFilter;
+atlasTex.generateMipmaps = false;
+atlasTex.colorSpace = THREE.SRGBColorSpace;
+
+// ---------------------------------------------------------------- world data
+// The world is endless: it is stored as 16×16×H chunks that are generated from the seed the
+// first time anything looks at them. Chunks far from the player are dropped again unless edited.
+const CHUNK_VOL = CH * CH * H;
+const chunks = new Map(); // ckey -> { cx, cz, data, mesh, edited }
+const ckey = (cx, cz) => (cx + 0x8000) * 0x10000 + (cz + 0x8000);
+const lidx = (lx, y, lz) => lx + lz * CH + y * CH * CH;
+const inBounds = (y) => y >= 0 && y < H;
+
+// island shape: large-scale noise decides land vs open sea; the start area is always land
+function terrainHeight(x, z) {
+  const c = fbm(x * 0.0035 + 200, z * 0.0035 + 200, 3) + Math.max(0, 0.25 - Math.hypot(x, z) / 400);
+  const island = smooth(Math.min(1, Math.max(0, (c - 0.47) / 0.12)));
+  let h = 8 + fbm(x * 0.025, z * 0.025) * 16;
+  h += Math.max(0, fbm(x * 0.01 + 50, z * 0.01 + 50) - 0.55) * 70;
+  h = (WATER - 6) + (h - (WATER - 6)) * island;
+  return Math.max(1, Math.min(H - 12, Math.floor(h)));
+}
+
+// Some seeds put the start out at sea or on a speck of sand. Keep drawing seeds until the start is
+// a proper island: nearly all grass right around it, and mostly grass out to where the animals
+// spawn. About half of all seeds qualify, and a check only samples the height function (~0.1 ms).
+function grassShare(r) {
+  let grass = 0, n = 0;
+  for (let z = -r; z <= r; z += 4) for (let x = -r; x <= r; x += 4) {
+    if (x * x + z * z > r * r) continue;
+    const h = terrainHeight(x, z);
+    n++;
+    if (h > WATER + 1 && h <= 32) grass++; // above the beach, below the bare stone peaks
+  }
+  return grass / n;
+}
+function pickSeed() {
+  let best = 0, bestScore = -1;
+  for (let i = 0; i < 200; i++) {
+    seed = Math.floor(Math.random() * 1e9);
+    const near = grassShare(12), wide = grassShare(64);
+    if (near >= 0.8 && wide >= 0.5) return seed;
+    if (near + wide > bestScore) { bestScore = near + wide; best = seed; }
+  }
+  return best; // practically never reached; take the most island-like seed seen
+}
+seed = pickSeed();
+const rand = mulberry32(seed);
+
+function generateChunk(cx, cz) {
+  const data = new Uint8Array(CHUNK_VOL), x0 = cx * CH, z0 = cz * CH;
+  for (let lz = 0; lz < CH; lz++) for (let lx = 0; lx < CH; lx++) {
+    const h = terrainHeight(x0 + lx, z0 + lz);
+    const beach = h <= WATER + 1;
+    for (let y = 0; y <= h; y++) {
+      let t;
+      if (y === 0) t = B.BEDROCK;
+      else if (y === h) t = beach ? B.SAND : h > 32 ? B.STONE : B.GRASS;
+      else if (y > h - 4) t = beach ? B.SAND : B.DIRT;
+      else t = B.STONE;
+      data[lidx(lx, y, lz)] = t;
+    }
+  }
+  // trees: chosen by a hash of their column, so a tree that spans a chunk border is built
+  // identically from both sides (each chunk only writes the blocks inside itself)
+  const put = (x, y, z, t, onlyAir) => {
+    const lx = x - x0, lz = z - z0;
+    if (lx < 0 || lx >= CH || lz < 0 || lz >= CH || !inBounds(y)) return;
+    const i = lidx(lx, y, lz);
+    if (!onlyAir || !data[i]) data[i] = t;
+  };
+  for (let z = z0 - 2; z < z0 + CH + 2; z++) for (let x = x0 - 2; x < x0 + CH + 2; x++) {
+    if (hash3(x, 9001, z) > 0.012) continue;
+    const y = terrainHeight(x, z);
+    if (y <= WATER + 1 || y > 32) continue; // only on grass
+    const th = 4 + Math.floor(hash3(x, 9002, z) * 3), top = y + th;
+    put(x, y, z, B.DIRT);
+    for (let i = 1; i <= th; i++) put(x, y + i, z, B.LOG);
+    for (let ly = top - 2; ly <= top + 1; ly++) {
+      const r = ly <= top - 1 ? 2 : 1;
+      for (let dx = -r; dx <= r; dx++) for (let dz = -r; dz <= r; dz++) {
+        if (Math.abs(dx) === r && Math.abs(dz) === r && (ly > top - 1 || hash3(x + dx, ly, z + dz) < 0.5)) continue;
+        put(x + dx, ly, z + dz, B.LEAVES, true);
+      }
+    }
+  }
+  return data;
+}
+
+let cacheKey = -1, cacheChunk = null; // block lookups hit the same chunk over and over
+function getChunk(cx, cz) {
+  const k = ckey(cx, cz);
+  if (k === cacheKey) return cacheChunk;
+  let c = chunks.get(k);
+  if (!c) chunks.set(k, c = { cx, cz, data: generateChunk(cx, cz), mesh: null, edited: false });
+  cacheKey = k; cacheChunk = c;
+  return c;
+}
+const getBlock = (x, y, z) => inBounds(y) ? getChunk(x >> 4, z >> 4).data[lidx(x & 15, y, z & 15)] : 0;
+function isSolid(x, y, z) {
+  if (y < 0) return true;
+  if (y >= H) return false;
+  return getBlock(x, y, z) !== 0;
+}
+function columnTop(x, z) {
+  const d = getChunk(x >> 4, z >> 4).data, lx = x & 15, lz = z & 15;
+  for (let y = H - 1; y >= 0; y--) if (d[lidx(lx, y, lz)]) return y;
+  return -1;
+}
+
+// ---------------------------------------------------------------- renderer + scene
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.autoUpdate = false; // updated once per frame, not for the extra sky/mask passes
+document.body.appendChild(renderer.domElement);
+
+const UNDERWATER = new THREE.Color(0x1f4f8f);
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x8ecdf5, 45, 130);
+
+const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.05, 500);
+camera.rotation.order = 'YXZ';
+
+// ---------------------------------------------------------------- sky, sun, moon, stars
+// Physically based sky: single-scattering Rayleigh + Mie through a spherical atmosphere,
+// with the planet's shadow so twilight fades properly after sunset.
+const ATMOS_GLSL = /* glsl */`
+  #define PI 3.141592653589793
+  const float R_PLANET = 6371e3;
+  const float R_ATMOS = 6471e3;
+  const vec3 K_RLH = vec3(5.5e-6, 13.0e-6, 22.4e-6);
+  const vec3 K_OZONE = vec3(0.98e-6, 2.82e-6, 0.13e-6); // absorbs orange/green: keeps horizons and twilight blue
+  const float K_MIE = 21e-6;
+  const float SH_RLH = 8e3;
+  const float SH_MIE = 1.2e3;
+  const float G_MIE = 0.758;
+  const vec3 EYE = vec3(0.0, 6372e3, 0.0);
+
+  vec2 rsi(vec3 r0, vec3 rd, float sr) {
+    float b = dot(rd, r0);
+    float d = b * b - (dot(r0, r0) - sr * sr);
+    if (d < 0.0) return vec2(1e9, -1e9);
+    d = sqrt(d);
+    return vec2(-b - d, -b + d);
+  }
+
+  vec3 atmosphere(vec3 r, vec3 pSun, float iSun) {
+    vec2 p = rsi(EYE, r, R_ATMOS);
+    if (p.x > p.y) return vec3(0.0);
+    float t0 = max(p.x, 0.0);
+    float t1 = p.y;
+    vec2 g = rsi(EYE, r, R_PLANET);
+    if (g.x > 0.0) t1 = min(t1, g.x);
+    float stepI = (t1 - t0) / float(ISTEPS);
+    float mu = dot(r, pSun), mumu = mu * mu, gg = G_MIE * G_MIE;
+    float pRlh = 3.0 / (16.0 * PI) * (1.0 + mumu);
+    float pMie = 3.0 / (8.0 * PI) * ((1.0 - gg) * (mumu + 1.0)) / (pow(1.0 + gg - 2.0 * mu * G_MIE, 1.5) * (2.0 + gg));
+    vec3 totRlh = vec3(0.0), totMie = vec3(0.0);
+    float odRlh = 0.0, odMie = 0.0;
+    for (int i = 0; i < ISTEPS; i++) {
+      vec3 pos = EYE + r * (t0 + stepI * (float(i) + 0.5));
+      float h = length(pos) - R_PLANET;
+      float dR = exp(-h / SH_RLH) * stepI, dM = exp(-h / SH_MIE) * stepI;
+      odRlh += dR; odMie += dM;
+      // skip points that are in the planet's shadow
+      vec2 gs = rsi(pos, pSun, R_PLANET);
+      if (gs.x > 0.0) continue;
+      float stepJ = rsi(pos, pSun, R_ATMOS).y / float(JSTEPS);
+      float jR = 0.0, jM = 0.0;
+      for (int j = 0; j < JSTEPS; j++) {
+        float hj = length(pos + pSun * stepJ * (float(j) + 0.5)) - R_PLANET;
+        jR += exp(-hj / SH_RLH) * stepJ;
+        jM += exp(-hj / SH_MIE) * stepJ;
+      }
+      vec3 attn = exp(-(K_MIE * 1.1 * (odMie + jM) + (K_RLH + K_OZONE) * (odRlh + jR)));
+      totRlh += dR * attn; totMie += dM * attn;
+    }
+    return iSun * (pRlh * K_RLH * totRlh + pMie * K_MIE * totMie);
+  }
+`;
+const NIGHT_SKY = new THREE.Vector3(0.035, 0.055, 0.12);
+const SUN_INTENSITY = 22, MOON_INTENSITY = 0.5;
+
+const skyMat = new THREE.ShaderMaterial({
+  side: THREE.BackSide, depthWrite: false,
+  uniforms: { sunDir: { value: new THREE.Vector3(0, 1, 0) }, moonDir: { value: new THREE.Vector3(0, -1, 0) }, nightSky: { value: NIGHT_SKY } },
+  vertexShader: `varying vec3 vDir; void main() { vDir = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `
+    #define ISTEPS 14
+    #define JSTEPS 6
+    #define SKY_EXPOSURE 5.0
+    const vec3 MS_FILL = vec3(0.02, 0.05, 0.12);
+    uniform vec3 sunDir; uniform vec3 moonDir; uniform vec3 nightSky;
+    varying vec3 vDir;
+    ${ATMOS_GLSL}
+    // exposure + tone curve: mostly luminance-based (keeps sunset hues saturated), a little per-channel
+    // for soft highlights, then a gentle saturation lift
+    vec3 toneMapSky(vec3 c) {
+      float L = dot(c, vec3(0.2126, 0.7152, 0.0722));
+      vec3 a = 1.0 - exp(-SKY_EXPOSURE * c);
+      vec3 b = min(vec3(1.0), c * (L > 0.0 ? (1.0 - exp(-SKY_EXPOSURE * L)) / L : 0.0));
+      vec3 t = mix(a, b, 0.75);
+      return clamp(mix(vec3(dot(t, vec3(0.2126, 0.7152, 0.0722))), t, 1.15), 0.0, 1.0);
+    }
+    void main() {
+      vec3 dir = normalize(vDir);
+      vec3 d = normalize(vec3(dir.x, max(dir.y, 0.03), dir.z)); // below ~2° the long path turns the haze pink; clamp it
+      vec3 col = atmosphere(d, sunDir, ${SUN_INTENSITY.toFixed(1)}) + atmosphere(d, moonDir, ${MOON_INTENSITY.toFixed(2)});
+      col += MS_FILL * smoothstep(-0.32, 0.0, sunDir.y);        // cheap stand-in for multiple scattering (blue hour)
+      col = toneMapSky(col);
+      col += nightSky * (1.0 - 0.5 * d.y);                     // faint airglow so night isn't pitch black
+      gl_FragColor = vec4(pow(col, vec3(2.2)), 1.0);           // to linear; the output pass converts back to sRGB
+    }`,
+});
+const skyScene = new THREE.Scene();
+skyScene.add(new THREE.Mesh(new THREE.SphereGeometry(5, 32, 16), skyMat));
+const skyTarget = new THREE.WebGLCubeRenderTarget(128, { type: THREE.HalfFloatType, generateMipmaps: false });
+const skyCubeCam = new THREE.CubeCamera(0.1, 10, skyTarget);
+scene.background = skyTarget.texture;
+
+// JS twin of the scattering model (fewer steps) for fog, light colours and the sun's colour
+const ATM = { rP: 6371e3, rA: 6471e3, kR: [5.5e-6, 13.0e-6, 22.4e-6], kO: [0.98e-6, 2.82e-6, 0.13e-6], kM: 21e-6, shR: 8e3, shM: 1.2e3, g: 0.758, eye: 6372e3 };
+function rsiJS(ox, oy, oz, d, sr) {
+  const b = d.x * ox + d.y * oy + d.z * oz, disc = b * b - (ox * ox + oy * oy + oz * oz - sr * sr);
+  if (disc < 0) return null;
+  const s = Math.sqrt(disc);
+  return [-b - s, -b + s];
+}
+function skyRadiance(dir, sun, iSun, out) {
+  const p = rsiJS(0, ATM.eye, 0, dir, ATM.rA);
+  if (!p) return out;
+  const t0 = Math.max(p[0], 0);
+  let t1 = p[1];
+  const gp = rsiJS(0, ATM.eye, 0, dir, ATM.rP);
+  if (gp && gp[0] > 0) t1 = Math.min(t1, gp[0]);
+  const N = 8, M = 4, st = (t1 - t0) / N;
+  const mu = dir.dot(sun), gg = ATM.g * ATM.g;
+  const pR = 3 / (16 * Math.PI) * (1 + mu * mu);
+  const pM = 3 / (8 * Math.PI) * ((1 - gg) * (mu * mu + 1)) / (Math.pow(1 + gg - 2 * mu * ATM.g, 1.5) * (2 + gg));
+  let odR = 0, odM = 0;
+  const totR = [0, 0, 0], totM = [0, 0, 0];
+  for (let i = 0; i < N; i++) {
+    const t = t0 + st * (i + 0.5);
+    const px = dir.x * t, py = ATM.eye + dir.y * t, pz = dir.z * t;
+    const h = Math.hypot(px, py, pz) - ATM.rP;
+    const dR = Math.exp(-h / ATM.shR) * st, dM = Math.exp(-h / ATM.shM) * st;
+    odR += dR; odM += dM;
+    const gs = rsiJS(px, py, pz, sun, ATM.rP);
+    if (gs && gs[0] > 0) continue;
+    const sj = rsiJS(px, py, pz, sun, ATM.rA)[1] / M;
+    let jR = 0, jM = 0;
+    for (let j = 0; j < M; j++) {
+      const tj = sj * (j + 0.5);
+      const hj = Math.hypot(px + sun.x * tj, py + sun.y * tj, pz + sun.z * tj) - ATM.rP;
+      jR += Math.exp(-hj / ATM.shR) * sj; jM += Math.exp(-hj / ATM.shM) * sj;
+    }
+    for (let c = 0; c < 3; c++) {
+      const a = Math.exp(-(ATM.kM * 1.1 * (odM + jM) + (ATM.kR[c] + ATM.kO[c]) * (odR + jR)));
+      totR[c] += dR * a; totM[c] += dM * a;
+    }
+  }
+  for (let c = 0; c < 3; c++) out[c] += iSun * (pR * ATM.kR[c] * totR[c] + pM * ATM.kM * totM[c]);
+  return out;
+}
+// colour of sunlight after passing through the atmosphere to the viewer
+function sunTransmittance(sun, out) {
+  if (sun.y < -0.02) { out[0] = out[1] = out[2] = 0; return out; }
+  const s = { x: sun.x, y: Math.max(sun.y, 0.0), z: sun.z };
+  const len = rsiJS(0, ATM.eye, 0, s, ATM.rA)[1], N = 12, st = len / N;
+  let odR = 0, odM = 0;
+  for (let i = 0; i < N; i++) {
+    const t = st * (i + 0.5);
+    const h = Math.hypot(s.x * t, ATM.eye + s.y * t, s.z * t) - ATM.rP;
+    odR += Math.exp(-h / ATM.shR) * st; odM += Math.exp(-h / ATM.shM) * st;
+  }
+  for (let c = 0; c < 3; c++) out[c] = Math.exp(-((ATM.kR[c] + ATM.kO[c]) * odR + ATM.kM * 1.1 * odM));
+  return out;
+}
+const SKY_EXPOSURE = 5.0, MS_FILL = [0.02, 0.05, 0.12];
+// same tone curve as the sky shader; rgb in, rgb (display values) out
+function toneMapSky(c) {
+  const L = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  const k = L > 0 ? (1 - Math.exp(-SKY_EXPOSURE * L)) / L : 0;
+  const t = c.map(v => (1 - Math.exp(-SKY_EXPOSURE * v)) * 0.25 + Math.min(1, v * k) * 0.75);
+  const tl = 0.2126 * t[0] + 0.7152 * t[1] + 0.0722 * t[2];
+  return t.map(v => clamp(tl + (v - tl) * 1.15, 0, 1));
+}
+
+// sun disc with limb darkening + corona glow (HDR so it blooms)
+const sunDisc = new THREE.Mesh(new THREE.PlaneGeometry(130, 130), new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false, toneMapped: false,
+  uniforms: { color: { value: new THREE.Color(1, 1, 1) }, glow: { value: 1 } },
+  vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `
+    uniform vec3 color; uniform float glow; varying vec2 vUv;
+    void main() {
+      vec2 p = vUv * 2.0 - 1.0;
+      float r = length(p), R = 0.12;
+      float disc = smoothstep(R, R * 0.94, r);
+      float mu = sqrt(max(0.0, 1.0 - (r / R) * (r / R)));
+      float limb = 0.35 + 0.65 * pow(mu, 0.45);
+      vec3 c = color * disc * limb * 9.0;
+      c += color * (exp(-r * 9.0) * 0.18 + exp(-r * 28.0) * 0.6) * glow;
+      gl_FragColor = vec4(c, 1.0);
+    }`,
+}));
+sunDisc.renderOrder = -1;
+scene.add(sunDisc);
+
+const moonDisc = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false, toneMapped: false,
+  uniforms: { alpha: { value: 0 } },
+  vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `
+    uniform float alpha; varying vec2 vUv;
+    float h(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    float n(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+      return mix(mix(h(i), h(i + vec2(1, 0)), f.x), mix(h(i + vec2(0, 1)), h(i + vec2(1, 1)), f.x), f.y); }
+    void main() {
+      vec2 p = vUv * 2.0 - 1.0;
+      float r = length(p), R = 0.28;
+      float disc = smoothstep(R, R * 0.95, r);
+      float maria = n(p * 7.0) * 0.6 + n(p * 15.0) * 0.4;           // dark "seas" on the moon
+      vec3 surf = vec3(0.92, 0.94, 1.0) * (0.75 + 0.35 * smoothstep(0.35, 0.75, maria));
+      vec3 c = surf * disc * 1.4 + vec3(0.6, 0.7, 1.0) * exp(-r * 5.0) * 0.25;
+      gl_FragColor = vec4(c * alpha, 1.0);
+    }`,
+}));
+moonDisc.renderOrder = -1;
+scene.add(moonDisc);
+
+// stars: twinkling points on a sphere that turns with the sky
+const starGeo = new THREE.BufferGeometry();
+{
+  const n = 1800, pos = new Float32Array(n * 3), size = new Float32Array(n), phase = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const u = Math.random() * 2 - 1, a = Math.random() * Math.PI * 2, r = Math.sqrt(1 - u * u);
+    pos.set([Math.cos(a) * r * 440, u * 440, Math.sin(a) * r * 440], i * 3);
+    size[i] = 1 + Math.pow(Math.random(), 6) * 3.5;
+    phase[i] = Math.random();
+  }
+  starGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  starGeo.setAttribute('size', new THREE.BufferAttribute(size, 1));
+  starGeo.setAttribute('phase', new THREE.BufferAttribute(phase, 1));
+}
+const stars = new THREE.Points(starGeo, new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
+  uniforms: { alpha: { value: 0 }, time: { value: 0 }, pr: { value: renderer.getPixelRatio() } },
+  vertexShader: `
+    attribute float size; attribute float phase; uniform float alpha; uniform float time; uniform float pr; varying float vA;
+    void main() {
+      vec4 wp = modelMatrix * vec4(position, 1.0);
+      gl_Position = projectionMatrix * viewMatrix * wp;
+      gl_PointSize = size * pr * 1.6;
+      float up = normalize(wp.xyz - cameraPosition).y;
+      vA = alpha * (0.6 + 0.4 * sin(time * (1.0 + phase * 3.0) + phase * 40.0)) * smoothstep(-0.02, 0.2, up);
+    }`,
+  fragmentShader: `
+    varying float vA;
+    void main() { float d = length(gl_PointCoord - 0.5); gl_FragColor = vec4(vec3(1.0, 0.96, 0.9) * smoothstep(0.5, 0.0, d) * vA, 1.0); }`,
+}));
+stars.renderOrder = -2;
+scene.add(stars);
+
+// ---------------------------------------------------------------- lights
+const hemi = new THREE.HemisphereLight(0xffffff, 0x667744, 1.0);
+scene.add(hemi);
+const sunLight = new THREE.DirectionalLight(0xffffff, 2);
+sunLight.castShadow = true;
+sunLight.shadow.mapSize.set(2048, 2048);
+Object.assign(sunLight.shadow.camera, { left: -48, right: 48, top: 48, bottom: -48, near: 1, far: 320 });
+sunLight.shadow.bias = -0.0004;
+sunLight.shadow.normalBias = 0.05;
+scene.add(sunLight, sunLight.target);
+
+// ---------------------------------------------------------------- water + sea floor
+const waterMat = new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false, side: THREE.DoubleSide, fog: true,
+  uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {
+    sunDir: { value: new THREE.Vector3() }, sunColor: { value: new THREE.Color() },
+    ambient: { value: new THREE.Color() }, time: { value: 0 },
+  }]),
+  vertexShader: `
+    varying vec3 vWorld;
+    #include <fog_pars_vertex>
+    void main() {
+      vec4 wp = modelMatrix * vec4(position, 1.0);
+      vWorld = wp.xyz;
+      vec4 mvPosition = viewMatrix * wp;
+      gl_Position = projectionMatrix * mvPosition;
+      #include <fog_vertex>
+    }`,
+  fragmentShader: `
+    #define OCEAN_RADIUS 480.0
+    uniform samplerCube skyCube; uniform vec3 sunDir; uniform vec3 sunColor; uniform vec3 ambient; uniform float time;
+    varying vec3 vWorld;
+    #include <common>
+    #include <fog_pars_fragment>
+    vec2 wave(vec2 p, vec2 d, float k, float a, float s) { float ph = dot(d, p) * k + time * s; return d * (a * k * cos(ph)); }
+    void main() {
+      vec2 p = vWorld.xz;
+      vec2 g = wave(p, normalize(vec2(1.0, 0.3)), 0.55, 0.08, 1.3)
+             + wave(p, normalize(vec2(-0.4, 1.0)), 0.9, 0.05, 1.7)
+             + wave(p, normalize(vec2(0.7, -0.8)), 1.7, 0.025, 2.4)
+             + wave(p, normalize(vec2(-1.0, -0.2)), 3.1, 0.012, 3.3)
+             + wave(p, normalize(vec2(0.2, 1.0)), 5.3, 0.007, 4.1)
+             + wave(p, normalize(vec2(0.9, 0.5)), 8.7, 0.004, 5.3);
+      float dist = length(cameraPosition - vWorld);
+      g *= 1.0 / (1.0 + dist * 0.004);
+      vec3 N = normalize(vec3(-g.x, 1.0, -g.y));
+      vec3 V = normalize(cameraPosition - vWorld);
+      vec3 deep = vec3(0.02, 0.09, 0.16) * ambient;
+      if (!gl_FrontFacing) { gl_FragColor = vec4(deep * 2.0, 0.65); return; }
+      vec3 R = reflect(-V, N); R.y = abs(R.y);
+      vec3 sky = textureCube(skyCube, R).rgb;
+      float fres = 0.02 + 0.98 * pow(1.0 - max(dot(N, V), 0.0), 5.0);
+      vec3 col = mix(deep, sky, fres);
+      // sun glitter: a tight HDR highlight plus a broader sheen
+      vec3 Hh = normalize(sunDir + V);
+      float nh = max(dot(N, Hh), 0.0);
+      col += sunColor * (pow(nh, 900.0) * 60.0 + pow(nh, 90.0) * 0.6);
+      gl_FragColor = vec4(col, mix(0.72, 0.97, fres));
+      // fade into the haze over a longer distance than the land so the open sea keeps its reflections
+      gl_FragColor.rgb = mix(gl_FragColor.rgb, fogColor, smoothstep(fogNear * 1.5, OCEAN_RADIUS, vFogDepth));
+    }`,
+});
+waterMat.uniforms.skyCube = { value: skyTarget.texture };
+// the sea is a big disc that follows the camera, so it always reaches the horizon
+const OCEAN_RADIUS = 490;
+const water = new THREE.Mesh(new THREE.CircleGeometry(OCEAN_RADIUS, 96), waterMat);
+water.rotation.x = -Math.PI / 2;
+water.position.set(0, WATER + 0.9, 0);
+water.renderOrder = 2;
+scene.add(water);
+const seaFloor = new THREE.Mesh(new THREE.CircleGeometry(OCEAN_RADIUS, 64), new THREE.MeshLambertMaterial({ color: 0xb8a77a }));
+seaFloor.rotation.x = -Math.PI / 2;
+seaFloor.position.set(0, WATER - 5.1, 0);
+scene.add(seaFloor);
+
+// clouds: lit by the sun so they glow at sunrise/sunset, and they cast drifting shadows.
+// They wrap around inside a square that follows the player.
+const CLOUD_SPAN = 480;
+const clouds = new THREE.Group();
+const cloudMat = new THREE.MeshLambertMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, fog: false });
+for (let i = 0; i < 30; i++) {
+  const c = new THREE.Mesh(new THREE.BoxGeometry(8 + rand() * 16, 2, 6 + rand() * 12), cloudMat);
+  c.position.set((rand() - 0.5) * CLOUD_SPAN, H + 12 + rand() * 6, (rand() - 0.5) * CLOUD_SPAN);
+  c.castShadow = true;
+  clouds.add(c);
+}
+scene.add(clouds);
+
+// ---------------------------------------------------------------- chunk meshing
+const FACES = [
+  { dir: [-1, 0, 0], shade: 0.92, corners: [[0, 1, 0, 0, 1], [0, 0, 0, 0, 0], [0, 1, 1, 1, 1], [0, 0, 1, 1, 0]] },
+  { dir: [1, 0, 0], shade: 0.92, corners: [[1, 1, 1, 0, 1], [1, 0, 1, 0, 0], [1, 1, 0, 1, 1], [1, 0, 0, 1, 0]] },
+  { dir: [0, -1, 0], shade: 0.75, corners: [[1, 0, 1, 1, 0], [0, 0, 1, 0, 0], [1, 0, 0, 1, 1], [0, 0, 0, 0, 1]] },
+  { dir: [0, 1, 0], shade: 1.0, corners: [[0, 1, 1, 1, 1], [1, 1, 1, 0, 1], [0, 1, 0, 1, 0], [1, 1, 0, 0, 0]] },
+  { dir: [0, 0, -1], shade: 0.86, corners: [[1, 0, 0, 0, 0], [0, 0, 0, 1, 0], [1, 1, 0, 0, 1], [0, 1, 0, 1, 1]] },
+  { dir: [0, 0, 1], shade: 0.86, corners: [[0, 0, 1, 0, 0], [1, 0, 1, 1, 0], [0, 1, 1, 0, 1], [1, 1, 1, 1, 1]] },
+];
+// Meshing reads from a padded copy of the chunk: the chunk itself plus a one-block border taken
+// from its neighbours, so face culling and AO never need a per-block chunk lookup.
+const PW = CH + 2, PL = PW * PW; // padded row width, padded layer size
+const pad = new Uint8Array(PL * (H + 2));
+const pidx = (px, y, pz) => px + pz * PW + (y + 1) * PL; // px/pz already include the +1 border
+const padOff = (d) => d[0] + d[2] * PW + d[1] * PL;
+// precompute the neighbour offsets used for face culling and corner ambient occlusion
+for (const F of FACES) {
+  const ax = F.dir[0] ? 0 : F.dir[1] ? 1 : 2, a1 = (ax + 1) % 3, a2 = (ax + 2) % 3;
+  F.off = padOff(F.dir);
+  F.ao = F.corners.map(c => {
+    const s1 = [...F.dir], s2 = [...F.dir], cn = [...F.dir];
+    s1[a1] += c[a1] * 2 - 1; s2[a2] += c[a2] * 2 - 1;
+    cn[a1] += c[a1] * 2 - 1; cn[a2] += c[a2] * 2 - 1;
+    return [padOff(s1), padOff(s2), padOff(cn)];
+  });
+}
+const AO_LEVELS = [0.45, 0.65, 0.83, 1];
+// lit by the sun/sky lights; vertex colours carry the baked corner AO
+const terrainMat = new THREE.MeshLambertMaterial({ map: atlasTex, vertexColors: true });
+
+function fillPad(cx, cz) {
+  pad.fill(0); // the layers below y=0 and above the top stay air
+  for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+    const d = getChunk(cx + dx, cz + dz).data;
+    // the part of this neighbour that falls inside the padded window (inclusive local ranges)
+    const xa = dx < 0 ? CH - 1 : 0, xb = dx > 0 ? 0 : CH - 1;
+    const za = dz < 0 ? CH - 1 : 0, zb = dz > 0 ? 0 : CH - 1;
+    for (let y = 0; y < H; y++) for (let lz = za; lz <= zb; lz++) {
+      const src = lidx(0, y, lz), dst = pidx(1 + dx * CH, y, lz + dz * CH + 1);
+      for (let lx = xa; lx <= xb; lx++) pad[dst + lx] = d[src + lx];
+    }
+  }
+}
+
+// scratch vertex buffers, grown as needed and reused by every chunk build
+let vCap = 0, sPos, sNrm, sUv, sCol, sInd;
+function growScratch(need) {
+  let cap = Math.max(vCap * 2, 16384);
+  while (cap < need) cap *= 2;
+  const grow = (old, n, T) => { const a = new T(n); if (old) a.set(old); return a; };
+  sPos = grow(sPos, cap * 3, Float32Array); sNrm = grow(sNrm, cap * 3, Float32Array);
+  sUv = grow(sUv, cap * 2, Float32Array); sCol = grow(sCol, cap * 3, Float32Array);
+  sInd = grow(sInd, cap * 1.5, Uint32Array);
+  vCap = cap;
+}
+
+function buildChunk(c) {
+  fillPad(c.cx, c.cz);
+  const d = c.data, ao = [0, 0, 0, 0];
+  let nv = 0, ni = 0;
+  // vertices are chunk-local (the mesh is placed at the chunk origin) so they stay precise far from 0,0
+  for (let y = 0; y < H; y++) for (let z = 0; z < CH; z++) for (let x = 0; x < CH; x++) {
+    const t = d[lidx(x, y, z)];
+    if (!t) continue;
+    const p = pidx(x + 1, y, z + 1);
+    for (let f = 0; f < 6; f++) {
+      const F = FACES[f];
+      if ((f === 2 && y === 0) || pad[p + F.off]) continue; // no bottom faces under bedrock
+      if (nv + 4 > vCap) growScratch(nv + 4);
+      const tile = tileFor(t, f), n = nv;
+      for (let i = 0; i < 4; i++) {
+        const cr = F.corners[i], o = F.ao[i];
+        const s1 = pad[p + o[0]] ? 1 : 0, s2 = pad[p + o[1]] ? 1 : 0, cn = pad[p + o[2]] ? 1 : 0;
+        ao[i] = (s1 && s2) ? 0 : 3 - (s1 + s2 + cn);
+        const s = F.shade * AO_LEVELS[ao[i]], v3 = nv * 3, v2 = nv * 2;
+        sPos[v3] = x + cr[0]; sPos[v3 + 1] = y + cr[1]; sPos[v3 + 2] = z + cr[2];
+        sNrm[v3] = F.dir[0]; sNrm[v3 + 1] = F.dir[1]; sNrm[v3 + 2] = F.dir[2];
+        sUv[v2] = (tile + 0.002 + cr[3] * 0.996) / NT; sUv[v2 + 1] = cr[4];
+        sCol[v3] = sCol[v3 + 1] = sCol[v3 + 2] = s;
+        nv++;
+      }
+      if (ao[0] + ao[3] > ao[1] + ao[2]) { sInd[ni++] = n; sInd[ni++] = n + 1; sInd[ni++] = n + 3; sInd[ni++] = n; sInd[ni++] = n + 3; sInd[ni++] = n + 2; }
+      else { sInd[ni++] = n; sInd[ni++] = n + 1; sInd[ni++] = n + 2; sInd[ni++] = n + 2; sInd[ni++] = n + 1; sInd[ni++] = n + 3; }
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(sPos.slice(0, nv * 3), 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(sNrm.slice(0, nv * 3), 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(sUv.slice(0, nv * 2), 2));
+  g.setAttribute('color', new THREE.BufferAttribute(sCol.slice(0, nv * 3), 3));
+  const ind = sInd.subarray(0, ni);
+  g.setIndex(new THREE.BufferAttribute(nv > 65535 ? ind.slice() : Uint16Array.from(ind), 1));
+  if (c.mesh) { c.mesh.geometry.dispose(); c.mesh.geometry = g; }
+  else {
+    c.mesh = new THREE.Mesh(g, terrainMat);
+    c.mesh.position.set(c.cx * CH, 0, c.cz * CH);
+    c.mesh.castShadow = c.mesh.receiveShadow = true;
+    scene.add(c.mesh);
+  }
+}
+
+const dirtyChunks = new Set();
+function setBlock(x, y, z, t) {
+  if (!inBounds(y)) return;
+  const c = getChunk(x >> 4, z >> 4);
+  c.data[lidx(x & 15, y, z & 15)] = t;
+  c.edited = true; // edited chunks are kept in memory when they are out of range
+  // rebuild this chunk plus any neighbour whose AO/faces touch the block
+  for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
+    const n = getChunk((x + dx) >> 4, (z + dz) >> 4);
+    if (n.mesh) dirtyChunks.add(n);
+  }
+}
+
+// ---------------------------------------------------------------- chunk streaming
+// Chunks within RENDER_DIST of the player get meshes, nearest first, a few per frame. Meshes are
+// freed a little further out, and the block data of unedited chunks further out still.
+let centerKey = NaN, loadQueue = [];
+function refreshChunks(pcx, pcz) {
+  const r2 = (RENDER_DIST + 0.5) ** 2, meshOut = (RENDER_DIST + 2) ** 2, dataOut = (RENDER_DIST + 3) ** 2;
+  loadQueue = [];
+  for (let dz = -RENDER_DIST; dz <= RENDER_DIST; dz++) for (let dx = -RENDER_DIST; dx <= RENDER_DIST; dx++) {
+    const d2 = dx * dx + dz * dz;
+    if (d2 > r2) continue;
+    const c = chunks.get(ckey(pcx + dx, pcz + dz));
+    if (!c || !c.mesh) loadQueue.push([pcx + dx, pcz + dz, d2]);
+  }
+  loadQueue.sort((a, b) => b[2] - a[2]); // nearest at the end, for pop()
+  for (const [k, c] of chunks) {
+    const d2 = (c.cx - pcx) ** 2 + (c.cz - pcz) ** 2;
+    if (c.mesh && d2 > meshOut) {
+      scene.remove(c.mesh);
+      c.mesh.geometry.dispose();
+      c.mesh = null;
+      dirtyChunks.delete(c);
+    }
+    if (!c.edited && d2 > dataOut) chunks.delete(k);
+  }
+  cacheKey = -1;
+}
+function updateChunks(budgetMs) {
+  const pcx = Math.floor(player.pos.x) >> 4, pcz = Math.floor(player.pos.z) >> 4, k = ckey(pcx, pcz);
+  if (k !== centerKey) { centerKey = k; refreshChunks(pcx, pcz); }
+  for (const c of dirtyChunks) buildChunk(c);
+  dirtyChunks.clear();
+  const t0 = performance.now();
+  while (loadQueue.length && performance.now() - t0 < budgetMs) {
+    const [cx, cz] = loadQueue.pop(), c = getChunk(cx, cz);
+    if (!c.mesh) buildChunk(c);
+  }
+}
+
+// ---------------------------------------------------------------- physics
+class Entity {
+  constructor(hw, h) {
+    this.pos = new THREE.Vector3(); this.vel = new THREE.Vector3();
+    this.hw = hw; this.h = h; this.yaw = 0;
+    this.onGround = false; this.hitWall = false; this.inWater = false; this.glide = false;
+  }
+}
+function boxCollides(px, py, pz, hw, h) {
+  const x0 = Math.floor(px - hw), x1 = Math.floor(px + hw);
+  const y0 = Math.floor(py), y1 = Math.floor(py + h);
+  const z0 = Math.floor(pz - hw), z1 = Math.floor(pz + hw);
+  for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++)
+    if (isSolid(x, y, z)) return true;
+  return false;
+}
+function moveAxis(e, axis, d) {
+  if (d === 0) return false;
+  const p = e.pos;
+  p[axis] += d;
+  if (!boxCollides(p.x, p.y, p.z, e.hw, e.h)) return false;
+  if (axis === 'y') {
+    if (d < 0) p.y = Math.floor(p.y) + 1;
+    else p.y = Math.floor(p.y + e.h) - e.h - 0.001;
+  } else if (d > 0) p[axis] = Math.floor(p[axis] + e.hw) - e.hw - 0.001;
+  else p[axis] = Math.floor(p[axis] - e.hw) + 1 + e.hw + 0.001;
+  return true;
+}
+function physics(e, dt) {
+  e.inWater = e.pos.y < WATER + 0.4;
+  e.vel.y -= GRAVITY * dt * (e.inWater ? 0.25 : 1);
+  if (e.inWater) e.vel.y = Math.max(e.vel.y, -2.5);
+  if (e.glide) e.vel.y = Math.max(e.vel.y, -3);
+  e.vel.y = Math.max(e.vel.y, -45);
+  // if something got stuck inside blocks, pop it up
+  let guard = 0;
+  while (boxCollides(e.pos.x, e.pos.y, e.pos.z, e.hw, e.h) && guard++ < H) e.pos.y = Math.floor(e.pos.y) + 1;
+  const maxV = Math.max(Math.abs(e.vel.x), Math.abs(e.vel.y), Math.abs(e.vel.z));
+  const steps = Math.max(1, Math.ceil(maxV * dt / 0.3)), sdt = dt / steps;
+  e.onGround = false; e.hitWall = false;
+  for (let i = 0; i < steps; i++) {
+    if (moveAxis(e, 'x', e.vel.x * sdt)) e.hitWall = true;
+    if (moveAxis(e, 'z', e.vel.z * sdt)) e.hitWall = true;
+    if (moveAxis(e, 'y', e.vel.y * sdt)) { if (e.vel.y < 0) e.onGround = true; e.vel.y = 0; }
+  }
+}
+// Climbing out of the water: when something swims into a bank, find the ledge in front of it (solid
+// ground with two free blocks above, up to about 2.5 blocks up) and return the upward speed that
+// just clears it, or 0 if there's nothing low enough to climb onto.
+function ledgeJump(e, dx, dz) {
+  const fx = Math.floor(e.pos.x + dx * (e.hw + 0.4)), fz = Math.floor(e.pos.z + dz * (e.hw + 0.4));
+  const y0 = Math.floor(e.pos.y);
+  for (let y = y0; y <= y0 + 3; y++) {
+    if (!isSolid(fx, y - 1, fz) || isSolid(fx, y, fz) || isSolid(fx, y + 1, fz)) continue;
+    const rise = y - e.pos.y;
+    return rise > 0 && rise < 2.6 ? Math.sqrt(2 * GRAVITY * (rise + 0.25)) : 0;
+  }
+  return 0;
+}
+function accelerate(e, tx, tz, dt, airControl = 4) {
+  const k = 1 - Math.exp(-(e.onGround ? 14 : airControl) * dt);
+  e.vel.x += (tx - e.vel.x) * k;
+  e.vel.z += (tz - e.vel.z) * k;
+}
+
+// ---------------------------------------------------------------- models
+const matCache = new Map(), geoCache = new Map();
+function mat(color) {
+  if (!matCache.has(color)) matCache.set(color, new THREE.MeshLambertMaterial({ color }));
+  return matCache.get(color);
+}
+function box(w, h, d, color, x, y, z, parent) {
+  const key = w + ',' + h + ',' + d;
+  if (!geoCache.has(key)) geoCache.set(key, new THREE.BoxGeometry(w, h, d));
+  const m = new THREE.Mesh(geoCache.get(key), mat(color));
+  m.castShadow = m.receiveShadow = true;
+  m.position.set(x, y, z);
+  m.userData.bake = true;
+  parent.add(m);
+  return m;
+}
+function pivot(x, y, z, parent) {
+  const g = new THREE.Group();
+  g.position.set(x, y, z);
+  parent.add(g);
+  return g;
+}
+// a group that never moves on its own (e.g. one feather), so bake() folds it into its joint
+function fixed(x, y, z, parent) {
+  const g = pivot(x, y, z, parent);
+  g.userData.fixed = true;
+  return g;
+}
+// f < 1 darkens, f > 1 lightens toward white (in sRGB, so it looks even on dark and light colours)
+function shade(hex, f) {
+  let out = 0;
+  for (let sh = 16; sh >= 0; sh -= 8) {
+    const v = (hex >> sh) & 255;
+    out = out << 8 | Math.round(f < 1 ? v * f : v + (255 - v) * (f - 1));
+  }
+  return out;
+}
+
+// Merge the plain boxes on each joint into one vertex-coloured mesh, so a detailed model costs
+// a draw call per moving part instead of one per box. Groups made with fixed() fold into their
+// joint; every other group (or a mesh like the blinking eyes) is a joint of its own.
+const bakedMat = new THREE.MeshLambertMaterial({ vertexColors: true });
+function bake(joint) {
+  const geos = [];
+  (function collect(node, m) {
+    for (const c of [...node.children]) {
+      c.updateMatrix();
+      const cm = new THREE.Matrix4().multiplyMatrices(m, c.matrix);
+      if (c.userData.bake) {
+        const g = c.geometry.clone().applyMatrix4(cm), n = g.attributes.position.count;
+        const col = new Float32Array(n * 3);
+        for (let i = 0; i < n; i++) c.material.color.toArray(col, i * 3);
+        g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+        geos.push(g);
+        node.remove(c);
+      } else if (c.userData.fixed) { collect(c, cm); node.remove(c); }
+      else bake(c);
+    }
+  })(joint, new THREE.Matrix4());
+  if (!geos.length) return;
+  const mesh = new THREE.Mesh(mergeGeometries(geos), bakedMat);
+  mesh.castShadow = mesh.receiveShadow = true;
+  joint.add(mesh);
+}
+
+// Models face -Z, so rotation.y uses the same yaw as the camera.
+function makePlayerModel() {
+  const root = new THREE.Group();
+  root.rotation.order = 'YXZ';
+  const SKIN = 0xe0ac87, SHIRT = 0x2aa5a5, PANTS = 0x3b46a8, HAIR = 0x4a2f1b;
+  const legL = pivot(-0.1125, 0.675, 0, root), legR = pivot(0.1125, 0.675, 0, root);
+  for (const l of [legL, legR]) { box(0.225, 0.6, 0.225, PANTS, 0, -0.3, 0, l); box(0.23, 0.08, 0.23, 0x444444, 0, -0.64, 0, l); }
+  box(0.45, 0.675, 0.225, SHIRT, 0, 1.0125, 0, root);
+  const armL = pivot(-0.3375, 1.35, 0, root), armR = pivot(0.3375, 1.35, 0, root);
+  for (const a of [armL, armR]) { box(0.225, 0.3, 0.225, SHIRT, 0, -0.15, 0, a); box(0.22, 0.375, 0.22, SKIN, 0, -0.4875, 0, a); }
+  const head = pivot(0, 1.35, 0, root);
+  head.rotation.order = 'YXZ';
+  box(0.45, 0.45, 0.45, SKIN, 0, 0.225, 0, head);
+  box(0.47, 0.12, 0.47, HAIR, 0, 0.41, 0, head);
+  box(0.47, 0.3, 0.08, HAIR, 0, 0.28, 0.2, head);
+  for (const s of [-1, 1]) { box(0.09, 0.06, 0.02, 0xffffff, s * 0.1, 0.22, -0.226, head); box(0.045, 0.06, 0.025, 0x3355aa, s * 0.08, 0.22, -0.228, head); }
+  box(0.14, 0.04, 0.02, 0x9a5a4a, 0, 0.1, -0.226, head);
+  scene.add(root);
+  return { root, legL, legR, armL, armR, head };
+}
+
+// Horse rig: root (position + yaw) → body pivot at the hind hips (bob, pitch, lean, rearing)
+// → two-segment legs, neck → head, jointed tail. Leg order is FL, FR, HL, HR.
+const HIP_Y = 0.8, SEAT_REST_Y = HIP_Y + 0.68;
+const LEATHER = 0x3d2312, STEEL = 0xb8bcc4, GOLD = 0xffd86b, SOCK = 0xf4f1ea;
+function makeHorseModel(c, unicorn) {
+  const root = new THREE.Group();
+  const body = pivot(0, HIP_Y, 0.55, root);
+  const hoof = unicorn ? 0xd9b3ff : 0x3a2a1e;
+  const saddle = unicorn ? 0xff6fb5 : 0x6b3a1e, strap = unicorn ? 0xff9ad5 : LEATHER;
+  const metal = unicorn ? GOLD : STEEL, trim = unicorn ? GOLD : 0xf0e6d0;
+  const legs = [];
+  [[-0.2, -1.05, false], [0.2, -1.05, false], [-0.2, 0, true], [0.2, 0, true]].forEach(([x, z, hind], i) => {
+    const hip = pivot(x, 0, z, body);
+    box(0.2, 0.42, hind ? 0.26 : 0.2, c.body, 0, -0.19, 0, hip);
+    box(0.22, 0.16, hind ? 0.3 : 0.22, c.body, 0, -0.07, 0, hip); // forearm / gaskin muscle
+    const knee = pivot(0, -0.38, 0, hip);
+    const lower = c.socks?.includes(i) ? SOCK : c.points ? c.mane : c.body;
+    box(0.15, 0.28, 0.15, lower, 0, -0.14, 0, knee);
+    if (hind) box(0.11, 0.1, 0.07, lower, 0, -0.05, 0.09, knee); // point of the hock
+    else box(0.16, 0.1, 0.05, lower, 0, -0.05, -0.07, knee);     // knee
+    box(0.17, 0.07, 0.17, lower, 0, -0.235, 0, knee);            // fetlock
+    if (unicorn) {
+      // silky feathering around the fetlocks
+      box(0.2, 0.08, 0.2, 0xf3e8ff, 0, -0.24, 0.01, knee);
+      box(0.12, 0.08, 0.06, 0xe0ccff, 0, -0.27, 0.1, knee);
+    }
+    box(0.19, 0.03, 0.19, unicorn ? GOLD : shade(hoof, 1.25), 0, -0.295, 0, knee); // coronet
+    box(0.18, 0.14, 0.18, hoof, 0, -0.35, 0, knee);
+    box(0.185, 0.025, 0.185, shade(hoof, 0.7), 0, -0.405, 0, knee);
+    legs.push({ hip, knee, hind });
+  });
+
+  // barrel, with a deeper chest, rounded hindquarters, withers and croup, and a darker belly
+  box(0.6, 0.62, 1.4, c.body, 0, 0.3, -0.55, body);
+  box(0.52, 0.48, 0.12, c.body, 0, 0.27, -1.29, body);
+  box(0.5, 0.44, 0.08, c.body, 0, 0.33, 0.18, body);
+  box(0.56, 0.1, 0.34, c.body, 0, 0.64, 0, body);
+  box(0.34, 0.08, 0.3, c.body, 0, 0.64, -1.07, body);
+  box(0.52, 0.06, 1.0, shade(c.body, 0.82), 0, -0.03, -0.6, body);
+  if (c.dorsal) {
+    box(0.06, 0.01, 0.34, c.mane, 0, 0.695, 0, body);
+    box(0.06, 0.01, 0.3, c.mane, 0, 0.685, -1.07, body);
+  }
+  if (c.dapples) {
+    for (const s of [-1, 1]) for (let i = 0; i < 22; i++) {
+      const y = 0.05 + hash2(i, s) * 0.5, z = -1.2 + hash2(s, i + 50) * 1.3;
+      if (y > 0.3 && z > -0.86 && z < -0.14) continue; // under the saddle cloth
+      box(0.012, 0.07, 0.08, shade(c.body, 1.25), s * 0.302, y, z, body);
+    }
+  }
+
+  // tack: saddle cloth with a trim, girth, saddle with pommel and cantle, stirrups
+  box(0.62, 0.3, 0.66, c.pad, 0, 0.47, -0.5, body);
+  box(0.63, 0.03, 0.67, trim, 0, 0.335, -0.5, body);
+  box(0.615, 0.71, 0.07, shade(saddle, 0.7), 0, 0.285, -0.72, body);
+  box(0.66, 0.2, 0.36, shade(saddle, 0.85), 0, 0.52, -0.5, body);
+  box(0.64, 0.08, 0.5, saddle, 0, 0.64, -0.5, body);
+  box(0.3, 0.1, 0.1, saddle, 0, 0.71, -0.72, body);
+  box(0.31, 0.03, 0.11, metal, 0, 0.75, -0.72, body);
+  box(0.42, 0.12, 0.08, saddle, 0, 0.72, -0.29, body);
+  for (const s of [-1, 1]) {
+    box(0.04, 0.28, 0.04, strap, s * 0.345, 0.48, -0.5, body);
+    if (unicorn) continue; // the folded wings cover where the irons would hang
+    box(0.08, 0.025, 0.13, metal, s * 0.355, 0.27, -0.5, body);
+    for (const dz of [-0.055, 0.055]) box(0.08, 0.08, 0.02, metal, s * 0.355, 0.305, -0.5 + dz, body);
+  }
+  const seat = pivot(0, 0.68, -0.55, body);
+
+  const neck = pivot(0, 0.45, -1.1, body);
+  neck.rotation.order = 'YXZ';
+  neck.rotation.x = -0.5;
+  box(0.3, 0.8, 0.42, c.body, 0, 0.35, -0.05, neck);
+  box(0.34, 0.3, 0.46, c.body, 0, 0.05, -0.04, neck); // thicker where it meets the shoulders
+  if (unicorn) {
+    RAINBOW_HEX.forEach((col, i) => {
+      const y = 0.72 - i * 0.14;
+      box(0.13, 0.16, 0.14, col, 0, y, 0.2, neck);
+      box(0.08, 0.08, 0.08, shade(col, 1.45), 0, y + 0.04, 0.29, neck);  // pastel tuft
+      box(0.04, 0.24, 0.1, shade(col, 1.2), 0.165, y - 0.07, 0.13, neck); // strands falling to one side
+    });
+  } else {
+    // a crest of alternating tufts, with longer locks falling down one side of the neck
+    box(0.1, 0.82, 0.08, c.mane, 0, 0.37, 0.19, neck);
+    for (let i = 0; i < 8; i++) {
+      const y = 0.75 - i * 0.105, alt = i % 2, k = i % 3;
+      box(0.12, 0.1, 0.1 + alt * 0.04, alt ? shade(c.mane, 1.18) : c.mane, 0, y, 0.22 + alt * 0.02, neck);
+      box(0.035, 0.12 + k * 0.04, 0.09, k ? c.mane : shade(c.mane, 0.75), 0.165, y - 0.06 - k * 0.02, 0.12, neck);
+    }
+  }
+  // reins run from the bit back along the neck
+  for (const s of [-1, 1]) box(0.014, 0.89, 0.025, strap, s * 0.17, 0.41, -0.22, neck).rotation.x = -0.865;
+
+  const head = pivot(0, 0.75, -0.05, neck);
+  head.rotation.x = 0.1;
+  box(0.32, 0.3, 0.42, c.body, 0, 0, -0.1, head);
+  box(0.26, 0.24, 0.36, c.body, 0, -0.04, -0.45, head);
+  box(0.3, 0.12, 0.2, c.body, 0, -0.16, 0, head);  // jaw
+  box(0.33, 0.04, 0.1, c.body, 0, 0.1, -0.12, head); // brow
+  const nose = unicorn || c.coat === 'White' ? 0xe8b9c8 : shade(c.body, 0.6);
+  box(0.27, 0.13, 0.1, nose, 0, -0.095, -0.59, head);
+  box(0.275, 0.012, 0.08, shade(nose, 0.6), 0, -0.125, -0.6, head); // mouth
+  for (const s of [-1, 1]) box(0.05, 0.04, 0.02, 0x1a1210, s * 0.07, -0.06, -0.645, head); // nostrils
+  if (c.face) {
+    box(0.08, 0.02, c.face === 'blaze' ? 0.18 : 0.08, SOCK, 0, 0.155, -0.2, head);
+    if (c.face === 'blaze') {
+      box(0.07, 0.02, 0.3, SOCK, 0, 0.085, -0.45, head);
+      box(0.07, 0.1, 0.012, SOCK, 0, 0.03, -0.632, head);
+    }
+  }
+  const eyes = [], ears = [];
+  for (const s of [-1, 1]) {
+    const eye = box(0.04, 0.07, 0.08, unicorn ? 0x2b1747 : 0x111111, s * 0.165, 0.04, -0.12, head);
+    eye.userData.bake = false; // kept separate so it can blink
+    box(0.01, 0.022, 0.022, 0xffffff, s * 0.02, 0.016, -0.02, eye); // glint
+    eyes.push(eye);
+    if (unicorn) for (let k = 0; k < 3; k++) box(0.012, 0.045, 0.014, 0x222222, s * 0.187, 0.085, -0.15 + k * 0.03, head);
+    const ear = pivot(s * 0.1, 0.14, 0.06, head);
+    box(0.07, 0.14, 0.05, c.body, 0, 0.07, 0, ear);
+    box(0.045, 0.05, 0.035, c.points ? c.mane : c.body, 0, 0.16, 0, ear);
+    box(0.04, 0.09, 0.012, unicorn ? 0xffb3d1 : shade(c.body, 0.55), 0, 0.065, -0.027, ear);
+    ears.push(ear);
+  }
+  // bridle: noseband, headpiece, cheek straps and bit rings
+  box(0.275, 0.28, 0.04, strap, 0, -0.04, -0.42, head);
+  box(0.335, 0.32, 0.04, strap, 0, 0, 0.02, head);
+  for (const s of [-1, 1]) {
+    box(0.012, 0.035, 0.33, strap, s * 0.166, -0.03, -0.14, head);
+    box(0.012, 0.035, 0.12, strap, s * 0.136, -0.03, -0.36, head);
+    box(0.03, 0.06, 0.06, metal, s * 0.14, -0.1, -0.5, head);
+  }
+  let horn = null;
+  if (unicorn) {
+    horn = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.45, 8), new THREE.MeshLambertMaterial({ color: 0xffd86b, emissive: 0x664400 }));
+    horn.position.set(0, 0.33, -0.18);
+    horn.rotation.x = -0.3;
+    horn.castShadow = true;
+    head.add(horn);
+    // a groove spiralling up the horn, and a gold band at its base
+    for (let k = 0; k < 16; k++) {
+      const t = k / 16, y = -0.2 + t * 0.36, r = 0.06 * (0.225 - y) / 0.45, a = t * Math.PI * 6, sz = 0.028 - t * 0.014;
+      box(sz, 0.022, sz, 0xfff4c2, Math.cos(a) * r, y, Math.sin(a) * r, horn);
+    }
+    box(0.13, 0.03, 0.13, GOLD, 0, -0.21, 0, horn);
+    box(0.16, 0.08, 0.12, 0xff9ad5, 0, 0.17, -0.02, head);
+    for (const s of [-1, 1]) box(0.05, 0.03, 0.18, s < 0 ? 0xffb3c6 : 0xbdb2ff, s * 0.085, 0.16, -0.16, head);
+  } else {
+    // forelock
+    box(0.12, 0.08, 0.06, c.mane, 0, 0.19, 0.03, head);
+    box(0.11, 0.03, 0.14, shade(c.mane, 1.12), 0, 0.165, -0.04, head);
+  }
+
+  // tail is a chain of segments so it can swish and stream behind
+  const tail = pivot(0, 0.5, 0.15, body);
+  tail.rotation.x = -0.5;
+  box(0.13, 0.12, 0.13, c.body, 0, -0.02, 0, tail); // dock
+  const tailSegs = [];
+  const segCount = unicorn ? 6 : 4, segLen = unicorn ? 0.14 : 0.2;
+  let parent = tail;
+  for (let i = 0; i < segCount; i++) {
+    const seg = pivot(0, i ? -segLen : 0, 0, parent);
+    const w = unicorn ? 0.15 : 0.14 - i * 0.012, col = unicorn ? RAINBOW_HEX[i] : c.mane;
+    box(w, segLen + 0.03, w, col, 0, -segLen / 2, 0, seg);
+    // loose strands around the core give the tail some volume
+    box(w * 0.45, segLen + 0.06, w * 0.45, shade(col, 0.78), w * 0.38, -segLen / 2 - 0.02, w * 0.3, seg);
+    box(w * 0.45, segLen + 0.05, w * 0.45, shade(col, 1.2), -w * 0.36, -segLen / 2 - 0.015, -w * 0.28, seg);
+    if (i === segCount - 1) box(w * 0.8, 0.08, w * 0.8, shade(col, 1.25), 0, -segLen - 0.03, 0, seg);
+    tailSegs.push(seg);
+    parent = seg;
+  }
+
+  const wings = unicorn ? [makeWing(-1, body), makeWing(1, body)] : null;
+
+  bake(root);
+  scene.add(root);
+  return { root, body, legs, seat, neck, head, eyes, ears, tail, tailSegs, horn, wings };
+}
+
+// Feathered wing (s = -1 left, +1 right). Local frame: span along s*x, feathers trail toward +z.
+// Shoulder rotation order YXZ = flap (z), then twist along the span (x), then sweep back (y).
+// The elbow (hand section) lags behind the shoulder when flapping, for a whip-like wingbeat.
+// Layered like a bird's wing: a rounded leading edge, rows of coverts on top and underneath, and
+// flight feathers with gold quills whose pastel tips run through the rainbow out to the wingtip.
+const WING_TIPS = [0xffb3c6, 0xffd6a5, 0xfdffb6, 0xcaffbf, 0x9bf6ff, 0xbdb2ff];
+const WING_WHITE = 0xffffff, WING_SOFT = 0xf1ecfb, WING_PEARL = 0xe4daf6, WING_QUILL = 0xf0d890;
+function wingTip(t) {
+  const f = t * (WING_TIPS.length - 1), i = Math.min(WING_TIPS.length - 2, Math.floor(f));
+  return new THREE.Color(WING_TIPS[i]).lerp(new THREE.Color(WING_TIPS[i + 1]), f - i).getHex();
+}
+// one flight feather rooted at (x, y, z), angled `a` radians off straight back
+function feather(x, y, z, len, w, a, tip, parent) {
+  const f = fixed(x, y, z, parent);
+  f.rotation.y = a;
+  box(w, 0.026, len * 0.7, WING_SOFT, 0, 0, len * 0.35, f);
+  box(w * 0.85, 0.024, len * 0.26, tip, 0, 0, len * 0.82, f);
+  box(w * 0.45, 0.022, len * 0.08, shade(tip, 0.9), 0, 0, len * 0.97, f);
+  box(0.012, 0.034, len * 0.92, WING_QUILL, 0, 0.004, len * 0.46, f);
+}
+// a row of n overlapping covert feathers spanning x0..x1, each with a rounded tip
+function covertRow(s, x0, x1, n, y, z, d, colA, colB, parent) {
+  const step = (x1 - x0) / n;
+  for (let i = 0; i < n; i++) {
+    const x = s * (x0 + (i + 0.5) * step), yy = y + (i % 2) * 0.004, col = i % 2 ? colA : colB;
+    box(step + 0.02, 0.03, d, col, x, yy, z, parent);
+    box(step * 0.6, 0.026, 0.04, col, x, yy, z + d / 2 + 0.015, parent);
+  }
+}
+function makeWing(s, parent) {
+  const shoulder = pivot(s * 0.33, 0.55, -1.08, parent);
+  shoulder.rotation.order = 'YXZ';
+  // arm: leading edge, lesser and greater coverts (plus a row underneath), six secondaries
+  box(0.5, 0.075, 0.09, WING_WHITE, s * 0.25, 0.012, 0, shoulder);
+  covertRow(s, 0, 0.5, 5, 0.018, 0.09, 0.1, WING_WHITE, WING_SOFT, shoulder);
+  covertRow(s, 0, 0.5, 4, 0.01, 0.18, 0.12, WING_SOFT, WING_PEARL, shoulder);
+  covertRow(s, 0, 0.5, 4, -0.026, 0.12, 0.2, WING_PEARL, WING_SOFT, shoulder);
+  for (let i = 0; i < 6; i++) {
+    feather(s * (0.04 + i * 0.085), -0.006 - (i % 2) * 0.006, 0.16, 0.42 + (i % 2) * 0.03, 0.095, s * 0.03 * (i - 2), wingTip(i / 12), shoulder);
+  }
+  // hand: leading edge, coverts, the little alula at the wrist, seven primaries fanning out to the tip
+  const elbow = pivot(s * 0.5, 0.02, 0, shoulder);
+  elbow.rotation.order = 'YXZ';
+  box(0.44, 0.065, 0.08, WING_WHITE, s * 0.21, 0.008, 0, elbow);
+  covertRow(s, 0, 0.42, 4, 0.016, 0.08, 0.1, WING_WHITE, WING_SOFT, elbow);
+  covertRow(s, 0, 0.42, 4, 0.008, 0.17, 0.11, WING_SOFT, WING_PEARL, elbow);
+  covertRow(s, 0, 0.42, 3, -0.024, 0.11, 0.18, WING_PEARL, WING_SOFT, elbow);
+  for (let i = 0; i < 2; i++) feather(s * 0.03, 0.045, 0.02, 0.16 - i * 0.03, 0.05, s * (1.9 + i * 0.25), WING_PEARL, elbow);
+  for (let i = 0; i < 7; i++) {
+    const t = i / 6;
+    feather(s * (0.06 + t * 0.36), -0.006 - (i % 2) * 0.006, 0.18 - t * 0.12, 0.48 + t * 0.12, 0.1, s * 1.05 * t ** 1.6, wingTip((6 + i) / 12), elbow);
+  }
+  return { shoulder, elbow, s };
+}
+
+// ---------------------------------------------------------------- horse animation
+// Each gait: per-leg footfall offsets (FL, FR, HL, HR), fraction of the stride a hoof is planted,
+// stride length in blocks, how far legs swing, and how high knees fold on the way forward.
+const GAITS = {
+  walk:   { offs: [0.25, 0.75, 0, 0.5], duty: 0.65, stride: 1.5, reach: 0.35, lift: 0.8 },
+  trot:   { offs: [0, 0.5, 0.5, 0],     duty: 0.45, stride: 2.2, reach: 0.45, lift: 1.2 },
+  gallop: { offs: [0.55, 0.65, 0, 0.12], duty: 0.35, stride: 3.6, reach: 0.7, lift: 1.5 },
+};
+const GAIT_NAMES = ['walk', 'trot', 'gallop'];
+const REAR_TIME = 1.2;
+const IDLE_TIME = { toss: 0.8, paw: 1.4, shake: 0.7, stretch: 2.4 };
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const legPoseOut = [0, 0];
+
+function legPose(q, g, hind) {
+  if (q < g.duty) {
+    // planted: the hoof stays put while the body moves over it, so the leg sweeps front to back
+    legPoseOut[0] = g.reach * (1 - 2 * q / g.duty);
+    legPoseOut[1] = 0;
+  } else {
+    // swinging forward: knee folds up then straightens to reach for the ground
+    const s = (q - g.duty) / (1 - g.duty);
+    const flex = Math.sin(Math.PI * s) * g.lift;
+    legPoseOut[0] = -g.reach + 2 * g.reach * (1 - Math.cos(Math.PI * s)) / 2 + (hind ? -0.15 : 0.25) * flex;
+    legPoseOut[1] = hind ? flex * 0.8 : -flex;
+  }
+  return legPoseOut;
+}
+const lerpArr = (a, b, t) => { for (let i = 0; i < a.length; i++) a[i] += (b[i] - a[i]) * t; };
+
+// Wings: folded on the ground, big strokes when climbing, held out to glide, swept back in a dive.
+// Returns a small body bob that goes with each wingbeat.
+function animateWings(m, dt, flying, jumping) {
+  let fold = 1, amp = 0, freq = 1, dihedral = 0.1;
+  if (flying) {
+    fold = 0;
+    if (m.vel.y > 1) { amp = 0.85; freq = 3.2; }            // climbing: powerful flaps
+    else if (m.vel.y < -5) { fold = 0.45; amp = 0.05; freq = 2; } // diving: swept back
+    else { amp = 0.1; freq = 1.1; dihedral = 0.28; }         // gliding: wings held up and out
+  } else if (jumping || m.rearT > 0) { fold = 0.15; amp = 0.6; freq = 3; }
+  else if (m.idle && m.idle.type === 'stretch') {
+    const s = m.idle.t / IDLE_TIME.stretch;
+    fold = 1 - Math.sin(Math.PI * Math.min(1, s)); amp = 0.35; freq = 0.9;
+  } else if (m.gw.gallop > 0.5 && Math.hypot(m.vel.x, m.vel.z) > 3) { fold = 0.8; amp = 0.15; freq = 2.5; }
+  const k = Math.min(1, dt * 6);
+  m.wingFold += (fold - m.wingFold) * k;
+  m.wingAmp += (amp - m.wingAmp) * k;
+  m.wingFreq += (freq - m.wingFreq) * k;
+  m.wingDihedral += (dihedral - m.wingDihedral) * k;
+  m.wingP += dt * m.wingFreq * Math.PI * 2;
+  const f = m.wingFold, open = 1 - f, beat = Math.sin(m.wingP);
+  for (const w of m.model.wings) {
+    const s = w.s;
+    // folded: swept straight back, feathers hanging down the flank, tip lifted slightly
+    w.shoulder.rotation.set(1.82 * f, -s * (0.15 + 1.35 * f), s * (open * (m.wingDihedral + m.wingAmp * beat) + 0.2 * f));
+    w.elbow.rotation.set(0, 0, s * open * m.wingAmp * 0.6 * Math.sin(m.wingP - 0.9));
+  }
+  return -beat * 0.05 * m.wingAmp * open;
+}
+
+function animateHorse(m, dt) {
+  const md = m.model;
+  const hs = Math.hypot(m.vel.x, m.vel.z);
+  const move = Math.min(1, hs / 0.8);
+  const prevAir = m.airTime;
+  m.airTime = m.onGround || m.inWater ? 0 : m.airTime + dt;
+  if (m.airTime === 0 && prevAir > 0.25) m.landT = 1;
+  const flying = m.kind === 'unicorn' && m.airTime > 0.25;
+
+  // blend smoothly between gaits as speed changes
+  const target = flying ? 'gallop' : hs < 2.8 ? 'walk' : hs < 5.8 ? 'trot' : 'gallop';
+  let stride = 0;
+  for (const g of GAIT_NAMES) {
+    m.gw[g] += ((g === target ? 1 : 0) - m.gw[g]) * Math.min(1, dt * 5);
+    stride += m.gw[g] * GAITS[g].stride;
+  }
+  m.phase = (m.phase + dt * (flying ? 2.2 : hs / stride)) % 1;
+
+  const hip = [0, 0, 0, 0], knee = [0, 0, 0, 0];
+  for (const g of GAIT_NAMES) {
+    const w = m.gw[g];
+    if (w < 0.001) continue;
+    const G = GAITS[g];
+    for (let i = 0; i < 4; i++) {
+      const p = legPose((m.phase - G.offs[i] + 1) % 1, G, i >= 2);
+      hip[i] += p[0] * w; knee[i] += p[1] * w;
+    }
+  }
+  const legAmt = flying ? 0.6 : move;
+  for (let i = 0; i < 4; i++) { hip[i] *= legAmt; knee[i] *= legAmt; }
+
+  // body bob / rocking and head nod for each gait
+  const P = m.phase * Math.PI * 2, gw = m.gw;
+  let bob = (gw.walk * 0.025 * Math.cos(2 * P) + gw.trot * 0.05 * Math.cos(2 * P) + gw.gallop * 0.07 * Math.sin(P)) * legAmt;
+  let pitch = gw.gallop * 0.1 * Math.sin(P - 0.6) * legAmt;
+  let neckX = -0.5 - (0.1 * gw.trot + 0.35 * gw.gallop) * move
+    + (gw.walk * 0.08 * Math.sin(2 * P) - gw.gallop * 0.22 * Math.sin(P - 0.6)) * legAmt;
+  let neckY = 0, headX = 0.1;
+
+  // jumping: tuck front legs on the way up, reach for the ground on the way down
+  const jumping = !m.onGround && !m.inWater && m.airTime > 0.08 && !flying;
+  m.airW += ((jumping ? 1 : 0) - m.airW) * Math.min(1, dt * 10);
+  if (m.airW > 0.001) {
+    const up = clamp(m.vel.y / 6, -1, 1) * 0.5 + 0.5;
+    const aHip = [0.5 + 0.4 * up, 0.5 + 0.4 * up, 0.3 - 0.9 * up, 0.3 - 0.9 * up];
+    const aKnee = [-0.3 - 1.3 * up, -0.3 - 1.3 * up, 0.7 - 0.4 * up, 0.7 - 0.4 * up];
+    lerpArr(hip, aHip, m.airW); lerpArr(knee, aKnee, m.airW);
+    pitch += (-0.15 + 0.4 * up) * m.airW;
+    neckX += (0.1 - 0.3 * up) * m.airW;
+  }
+  if (flying) {
+    pitch += clamp(m.vel.y * 0.04, -0.3, 0.3);
+    knee[0] -= 0.5; knee[1] -= 0.5; knee[2] += 0.3; knee[3] += 0.3;
+  }
+
+  // landing squash
+  m.landT = Math.max(0, m.landT - dt * 4);
+  bob -= 0.09 * m.landT; pitch -= 0.06 * m.landT;
+  knee[0] -= 0.4 * m.landT; knee[1] -= 0.4 * m.landT; knee[2] += 0.4 * m.landT; knee[3] += 0.4 * m.landT;
+
+  // idle fidgets: head toss, pawing the ground, head shake, the odd rear
+  m.idleCd -= dt;
+  if (!m.idle && m.idleCd <= 0 && hs < 0.3 && m.onGround && m.rearT <= 0 && m.state !== 'graze') {
+    const r = Math.random();
+    if (r < 0.1 && !m.rider) m.rearT = REAR_TIME;
+    else if (r < 0.35 && m.kind === 'unicorn') m.idle = { type: 'stretch', t: 0 };
+    else m.idle = { type: r < 0.55 ? 'toss' : r < 0.85 ? 'paw' : 'shake', t: 0 };
+    m.idleCd = 3 + Math.random() * 5;
+  }
+  if (m.idle) {
+    const I = m.idle;
+    I.t += dt;
+    const s = I.t / IDLE_TIME[I.type], env = Math.sin(Math.PI * Math.min(1, s));
+    if (I.type === 'toss') { neckX += 0.45 * env; headX -= 0.35 * Math.sin(2 * Math.PI * s) * env; }
+    else if (I.type === 'paw') { hip[1] += (0.45 + 0.35 * Math.sin(s * Math.PI * 6)) * env; knee[1] -= 1.3 * env; }
+    else if (I.type === 'shake') neckY += Math.sin(I.t * 22) * 0.25 * env;
+    else { neckX += 0.25 * env; } // stretch: head up while the wings open (see wings below)
+    if (s >= 1 || hs > 0.5) m.idle = null;
+  }
+
+  // grazing: lower the head and chew
+  m.grazeW += ((m.state === 'graze' && !m.rider && hs < 0.5 ? 1 : 0) - m.grazeW) * Math.min(1, dt * 2.5);
+  neckX += (-2.1 - neckX) * m.grazeW;
+  headX += Math.sin(time * 9) * 0.07 * m.grazeW;
+
+  // rearing up on the hind legs (when you climb on, and now and then on its own)
+  m.rearR = 0;
+  if (m.rearT > 0) {
+    m.rearT -= dt;
+    const s = 1 - Math.max(0, m.rearT) / REAR_TIME;
+    const r = Math.min(1, Math.sin(Math.PI * s) * 1.5);
+    m.rearR = r;
+    pitch += 0.85 * r;
+    for (let i = 0; i < 2; i++) {
+      hip[i] += (0.9 + Math.sin(time * 14 + i * 1.5) * 0.35 - hip[i]) * r;
+      knee[i] += (-1.5 - knee[i]) * r;
+    }
+    for (let i = 2; i < 4; i++) { hip[i] += (-pitch - hip[i]) * r; knee[i] += (0.15 - knee[i]) * r; }
+    neckX += (-0.05 - neckX) * r;
+    headX += Math.sin(time * 7) * 0.25 * r;
+  }
+
+  // lean into turns and look where it's going
+  const yawRate = wrapAngle(m.yaw - m.prevYaw) / Math.max(dt, 1e-4);
+  m.prevYaw = m.yaw;
+  m.turn += (yawRate - m.turn) * Math.min(1, dt * 6);
+  const lean = clamp(m.turn * hs * 0.02, -0.25, 0.25);
+  neckY += clamp(m.turn * 0.12, -0.45, 0.45);
+
+  if (md.wings) bob += animateWings(m, dt, flying, jumping);
+
+  // apply
+  md.body.position.y = HIP_Y + bob + Math.sin(time * 2 + m.breath) * 0.006;
+  md.body.rotation.x = pitch;
+  md.body.rotation.z = lean;
+  for (let i = 0; i < 4; i++) { md.legs[i].hip.rotation.x = hip[i]; md.legs[i].knee.rotation.x = knee[i]; }
+  md.neck.rotation.x = neckX;
+  md.neck.rotation.y = neckY;
+  md.head.rotation.x = headX;
+
+  // ears pin back at a gallop and flick now and then; eyes blink
+  m.earT -= dt;
+  if (m.earT <= 0) { m.earT = 1.5 + Math.random() * 4; m.earFlick = 1; m.earSide = Math.random() < 0.5 ? 0 : 1; }
+  m.earFlick = Math.max(0, m.earFlick - dt * 5);
+  const earBack = 0.6 * gw.gallop * move;
+  md.ears.forEach((e, i) => {
+    e.rotation.x = earBack + (i === m.earSide ? Math.sin(m.earFlick * Math.PI) * 0.6 : 0);
+    e.rotation.z = (i ? -1 : 1) * 0.12;
+  });
+  m.blinkT -= dt;
+  if (m.blinkT <= 0) m.blinkT = 2 + Math.random() * 4;
+  for (const e of md.eyes) e.scale.y = m.blinkT < 0.12 ? 0.15 : 1;
+
+  // tail: lazy swishes at rest, streams out behind at speed
+  const fast = Math.max(gw.gallop * move, flying ? 1 : 0, m.airW * 0.6);
+  m.swish = Math.max(0, m.swish - dt * 1.5);
+  if (Math.random() < dt * 0.25) m.swish = 1;
+  md.tail.rotation.x = -0.45 - 0.75 * fast - pitch * 0.5;
+  md.tail.rotation.z = Math.sin(time * 7) * 0.35 * m.swish * (1 - fast);
+  md.tailSegs.forEach((s, i) => {
+    s.rotation.x = (i ? 0.06 * (1 - fast) : 0) + Math.sin(time * 10 - i * 0.8) * 0.08 * fast;
+    s.rotation.z = Math.sin(time * (1.5 + fast * 6) - i * 0.9) * (0.04 + 0.1 * fast + 0.12 * m.swish);
+  });
+
+  md.root.position.copy(m.pos);
+  md.root.rotation.y = m.yaw;
+  md.root.updateMatrixWorld(true);
+  md.seat.getWorldPosition(m.seatWorld);
+}
+
+// ---------------------------------------------------------------- dragons
+// Dragon rig, built like a winged T-rex: root → body pivot at the hips, balanced over two big
+// bird-like hind legs (hip → knee → ankle → toes), a long tail held out behind as a counterweight,
+// a neck chain → big head → jaw, and two bat-like wings on the back (no front legs, like a wyvern):
+// shoulder → arm membrane, elbow → a fan of finger bones with membrane between them. The membranes
+// sit in their own groups so folding can squash them flat along the bones.
+const DRAGON_HIP_Y = 1.5;
+const DRAGON_LEG = [0.6, 0.65, 0.4]; // thigh, shin, and the long upright foot bone (ankle to toes)
+const DRAGON_NECK_REST = [0.7, 0.2, -0.3], DRAGON_NECK_FLY = [0.15, 0.02, -0.06];
+const DRAGON_HEAD_Z = -0.38;
+const DRAGON_ARM = 1.5, DRAGON_FINGERS = [[0.12, 2.3], [0.55, 2.05], [0.98, 1.65], [1.4, 1.25]]; // [angle back from the leading edge, length]
+const CLAW = 0xf2ead2, MOUTH = 0x7a2228;
+function makeDragonModel(c) {
+  const root = new THREE.Group();
+  const body = pivot(0, DRAGON_HIP_Y, 0, root);
+  const dark = shade(c.body, 0.78);
+
+  // hind legs: a heavy drumstick thigh angled forward, a shin angled back, then a long foot bone
+  // standing up on three forward toes and a small back toe
+  const legs = [];
+  for (const s of [-1, 1]) {
+    const hip = pivot(s * 0.5, 0, 0, body);
+    box(0.46, 0.6, 0.72, c.body, 0, -0.18, 0.02, hip);
+    box(0.36, 0.3, 0.48, c.body, 0, -0.5, 0, hip);
+    box(0.48, 0.1, 0.4, dark, 0, 0.1, 0.06, hip);
+    const knee = pivot(0, -0.6, 0, hip);
+    box(0.28, 0.7, 0.34, c.body, 0, -0.32, 0.03, knee);
+    box(0.3, 0.3, 0.38, c.body, 0, -0.12, 0.05, knee);           // calf
+    box(0.26, 0.1, 0.12, dark, 0, -0.05, -0.12, knee);
+    const ankle = pivot(0, -0.65, 0, knee);
+    box(0.2, 0.44, 0.2, c.body, 0, -0.2, 0, ankle);
+    box(0.21, 0.38, 0.03, dark, 0, -0.2, -0.1, ankle);           // scales down the front
+    box(0.12, 0.1, 0.14, dark, 0, 0.0, 0.1, ankle);              // heel spur
+    const toes = pivot(0, -0.4, 0, ankle);
+    for (let k = -1; k <= 1; k++) {
+      const t = fixed(k * 0.1, 0, 0, toes);
+      t.rotation.y = -k * 0.3;
+      box(0.09, 0.08, 0.38, c.body, 0, -0.04, -0.17, t);
+      box(0.07, 0.08, 0.12, CLAW, 0, -0.05, -0.41, t);
+    }
+    box(0.07, 0.07, 0.18, c.body, 0, -0.045, 0.1, toes);
+    box(0.05, 0.06, 0.08, CLAW, 0, -0.05, 0.22, toes);
+    legs.push({ hip, knee, ankle, toes });
+  }
+
+  // torso: hips, a level body and a deep chest, belly plates, flank scales and a row of spikes
+  box(0.8, 0.75, 0.6, c.body, 0, 0.12, 0.05, body);
+  box(0.84, 0.8, 1.3, c.body, 0, 0.12, -0.75, body);
+  box(0.78, 0.86, 0.35, c.body, 0, 0.05, -1.5, body);
+  box(0.66, 0.12, 0.6, c.body, 0, 0.56, -1.05, body);
+  box(0.56, 0.6, 0.05, c.belly, 0, 0.0, -1.69, body);
+  for (let i = 0; i < 6; i++) box(0.6, 0.06, 0.24, i % 2 ? c.belly : shade(c.belly, 0.9), 0, -0.3, -0.1 - i * 0.26, body);
+  for (const s of [-1, 1]) for (let i = 0; i < 6; i++)
+    box(0.012, 0.14, 0.22, i % 2 ? dark : shade(c.body, 0.88), s * 0.425, (i % 2) * 0.2, 0.1 - i * 0.27, body);
+  for (let i = 0; i < 7; i++) {
+    if (i >= 2 && i <= 4) continue; // the saddle sits here
+    const h = 0.16 + 0.06 * Math.sin(i / 6 * Math.PI);
+    box(0.06, h, 0.16, c.spike, 0, 0.52 + h / 2, 0.25 - i * 0.27, body);
+  }
+
+  // saddle: a blanket draped over the back with a gold trim, a seat with a high pommel to hold on
+  // to and a cantle behind, a girth strap round the belly, and stirrups
+  const blanket = shade(c.wing, 0.7);
+  box(0.9, 0.04, 0.8, blanket, 0, 0.53, -0.45, body);
+  for (const s of [-1, 1]) {
+    box(0.03, 0.3, 0.8, blanket, s * 0.445, 0.39, -0.45, body);
+    box(0.034, 0.03, 0.82, GOLD, s * 0.447, 0.245, -0.45, body);
+    box(0.04, 0.8, 0.08, LEATHER, s * 0.44, 0.12, -0.45, body);
+    box(0.03, 0.42, 0.04, LEATHER, s * 0.47, 0.3, -0.4, body);
+    box(0.1, 0.03, 0.14, GOLD, s * 0.49, 0.09, -0.4, body);
+  }
+  box(0.86, 0.04, 0.08, LEATHER, 0, -0.34, -0.45, body);
+  box(0.56, 0.1, 0.56, LEATHER, 0, 0.6, -0.45, body);
+  box(0.26, 0.18, 0.1, LEATHER, 0, 0.72, -0.74, body);
+  box(0.22, 0.04, 0.04, GOLD, 0, 0.83, -0.74, body);
+  box(0.44, 0.16, 0.08, LEATHER, 0, 0.71, -0.17, body);
+  box(0.45, 0.03, 0.09, GOLD, 0, 0.8, -0.17, body);
+  const seat = pivot(0, 0.68, -0.45, body);
+
+  // neck: a short, thick chain rising from the chest
+  const neckSegs = [];
+  let parent = pivot(0, 0.3, -1.6, body);
+  for (let i = 0; i < 3; i++) {
+    const seg = pivot(0, 0, i ? -0.38 : 0, parent), w = 0.52 - i * 0.04;
+    box(w, w * 0.95, 0.44, c.body, 0, 0, -0.19, seg);
+    box(w * 0.7, 0.05, 0.32, c.belly, 0, -w * 0.48, -0.19, seg);
+    box(0.05, 0.14, 0.12, c.spike, 0, w * 0.48 + 0.06, -0.19, seg);
+    neckSegs.push(seg);
+    parent = seg;
+  }
+
+  // a big T-rex head
+  const head = pivot(0, 0, DRAGON_HEAD_Z, parent);
+  box(0.58, 0.46, 0.58, c.body, 0, 0.08, -0.22, head);               // skull
+  box(0.44, 0.28, 0.62, c.body, 0, 0.02, -0.76, head);               // snout
+  box(0.16, 0.05, 0.52, dark, 0, 0.18, -0.7, head);                  // ridge along the snout
+  for (const s of [-1, 1]) {
+    box(0.14, 0.09, 0.34, dark, s * 0.2, 0.33, -0.27, head);          // brow
+    box(0.07, 0.05, 0.03, 0x1a0e0a, s * 0.12, 0.1, -1.075, head);     // nostril
+    for (let k = 0; k < 4; k++) box(0.035, 0.07, 0.035, CLAW, s * 0.19, -0.14, -0.55 - k * 0.14, head); // fangs
+    for (let k = 0; k < 3; k++) box(0.03, 0.16 - k * 0.03, 0.12, c.wing, s * 0.3, 0.04 - k * 0.09, -0.02 + k * 0.07, head); // cheek frills
+    // horns sweep back and a little outward, in three tapering pieces
+    const h1 = fixed(s * 0.19, 0.3, -0.02, head);
+    h1.rotation.set(1.0, 0, -s * 0.3);
+    box(0.12, 0.28, 0.12, c.horn, 0, 0.13, 0, h1);
+    const h2 = fixed(0, 0.27, 0, h1);
+    h2.rotation.x = 0.35;
+    box(0.085, 0.24, 0.085, c.horn, 0, 0.11, 0, h2);
+    box(0.05, 0.18, 0.05, shade(c.horn, 0.85), 0, 0.3, 0, h2);
+  }
+  const jaw = pivot(0, -0.13, -0.18, head);
+  box(0.4, 0.14, 0.86, c.body, 0, -0.05, -0.42, jaw);
+  box(0.3, 0.03, 0.74, c.belly, 0, -0.13, -0.4, jaw);
+  box(0.32, 0.02, 0.72, MOUTH, 0, 0.022, -0.44, jaw);
+  for (const s of [-1, 1]) for (let k = 0; k < 3; k++) box(0.035, 0.06, 0.035, CLAW, s * 0.16, 0.05, -0.75 + k * 0.16, jaw);
+  const eyes = [];
+  for (const s of [-1, 1]) {
+    const eye = box(0.04, 0.11, 0.15, c.eye, s * 0.29, 0.19, -0.33, head);
+    eye.userData.bake = false; // kept separate so it can blink
+    box(0.012, 0.1, 0.03, 0x111111, s * 0.022, 0, 0, eye); // slit pupil
+    eyes.push(eye);
+  }
+
+  // tail: a long tapering chain held out behind (+z), ending in a spade
+  const tail = pivot(0, 0.2, 0.32, body);
+  const tailSegs = [];
+  parent = tail;
+  for (let i = 0; i < 8; i++) {
+    const seg = pivot(0, 0, i ? 0.42 : 0, parent), w = 0.06 + 0.5 * (1 - i / 8);
+    box(w, w * 0.9, 0.46, c.body, 0, 0, 0.21, seg);
+    box(w * 0.7, 0.04, 0.34, c.belly, 0, -w * 0.45, 0.21, seg);
+    box(0.05, 0.08 + w * 0.2, 0.14, c.spike, 0, w * 0.45 + 0.05, 0.21, seg);
+    tailSegs.push(seg);
+    parent = seg;
+  }
+  const spade = fixed(0, 0, 0.55, parent);
+  spade.rotation.y = Math.PI / 4;
+  box(0.36, 0.04, 0.36, c.wing, 0, 0, 0, spade);
+  box(0.2, 0.06, 0.2, c.spike, 0, 0, 0, spade);
+
+  const wings = [makeDragonWing(-1, body, c), makeDragonWing(1, body, c)];
+
+  bake(root);
+  scene.add(root);
+  return { root, body, seat, legs, neckSegs, head, jaw, eyes, tail, tailSegs, wings };
+}
+
+// Bat-like wing (s = -1 left, +1 right). Local frame: span along s*x, membrane trails toward +z.
+// Shoulder rotation order YXZ = flap (z), then twist (x), then sweep (y), like the unicorn's wings.
+function makeDragonWing(s, parent, c) {
+  const A = DRAGON_ARM;
+  const shoulder = pivot(s * 0.36, 0.5, -1.0, parent);
+  shoulder.rotation.order = 'YXZ';
+  box(0.55, 0.24, 0.24, c.body, s * 0.27, 0, 0, shoulder);
+  box(A, 0.15, 0.15, c.body, s * A / 2, 0, 0, shoulder);
+  const armMem = pivot(0, 0, 0, shoulder);
+  box(A, 0.025, 1.0, c.wing, s * A / 2, -0.02, 0.52, armMem);
+  box(0.9, 0.025, 0.45, c.wing, s * 0.45, -0.02, 1.24, armMem);
+  const elbow = pivot(s * A, 0, 0, shoulder);
+  elbow.rotation.order = 'YXZ';
+  box(0.2, 0.2, 0.2, c.body, 0, 0, 0, elbow);
+  box(0.07, 0.14, 0.18, CLAW, s * 0.04, 0.11, -0.11, elbow); // thumb claw
+  const fan = pivot(0, 0, 0, elbow);
+  DRAGON_FINGERS.forEach(([a, len], i) => {
+    const f = fixed(0, 0, 0, fan);
+    f.rotation.y = -s * a;
+    box(len, 0.09, 0.09, shade(c.body, 0.9), s * len / 2, 0.01, 0, f);
+    if (i === 0) box(0.16, 0.07, 0.07, CLAW, s * (len + 0.06), 0.01, 0, f);
+    if (i === DRAGON_FINGERS.length - 1) return;
+    // membrane between this finger and the next, built as a stepped triangle out to the shorter one
+    const [a2, len2] = DRAGON_FINGERS[i + 1], half = (a2 - a) / 2, L = Math.min(len, len2) * 0.97;
+    const p = fixed(0, 0, 0, fan);
+    p.rotation.y = -s * (a + half);
+    for (let j = 0; j < 4; j++) {
+      const r0 = j * L / 4, r1 = (j + 1) * L / 4;
+      box(r1 - r0 + 0.02, 0.02, 2 * r1 * Math.tan(half) + 0.04, j % 2 ? c.wing : shade(c.wing, 0.93), s * (r0 + r1) / 2, -0.01, 0, p);
+    }
+  });
+  return { shoulder, elbow, armMem, fan, s };
+}
+
+// Walking like a big bird: the feet take turns, each planted on the ground while the body passes
+// over it, then picked up with the toes curled and swung forward for the next step.
+const DRAGON_STRIDE = 1.7, DRAGON_DUTY = 0.6;
+// leg poses in the air, as [hip, knee, ankle, toes]: streaming back in flight, reaching down to land
+const DRAGON_FLY_LEG = [-1.1, -0.5, 0.5, 0.9], DRAGON_LAND_LEG = [0.7, -0.9, 0.6, -0.4];
+const legIK = [0, 0, 0, 0];
+// Pose a hind leg so the ball of the foot sits `fwd` ahead of and `down` below the hip: the foot
+// bone is held at angle `meta`, and the thigh and shin are solved as a two-bone chain with the knee
+// pointing forward. Angles are measured from straight down, + forward; returns the joint rotations.
+function dragonLegIK(fwd, down, meta, toe) {
+  const [L1, L2, L3] = DRAGON_LEG;
+  const ax = fwd - L3 * Math.sin(meta), ay = down - L3 * Math.cos(meta);
+  const d = clamp(Math.hypot(ax, ay), 0.1, (L1 + L2) * 0.999), phi = Math.atan2(ax, ay);
+  const thigh = phi + Math.acos(clamp((L1 * L1 + d * d - L2 * L2) / (2 * L1 * d), -1, 1));
+  const shin = phi - Math.acos(clamp((L2 * L2 + d * d - L1 * L1) / (2 * L2 * d), -1, 1));
+  legIK[0] = thigh; legIK[1] = shin - thigh; legIK[2] = meta - shin; legIK[3] = toe - meta;
+  return legIK;
+}
+
+function animateDragonWings(d, dt, takeoffC) {
+  const flying = d.state === 'fly' || d.state === 'land';
+  let fold = 1, amp = 0, freq = 1, dihedral = 0.12;
+  if (flying) {
+    fold = 0;
+    const flare = (d.state === 'land' || d.fvy < -1) && d.pos.y - d.groundY < 4;
+    if (flare || d.fvy > 1.2 || d.hitWall || Math.hypot(d.vel.x, d.vel.z) < 3) { amp = 0.8; freq = 1.3; } // climbing, hovering, or flaring to land
+    else if (d.fvy < -4) { fold = 0.35; amp = 0.05; freq = 2; }                // diving: swept back
+    else {
+      // cruising: long glides with a few lazy wingbeats now and then
+      d.glideT -= dt;
+      if (d.glideT <= 0) { d.flapping = !d.flapping; d.glideT = d.flapping ? 1.5 + Math.random() : 2 + Math.random() * 3; }
+      if (d.flapping) { amp = 0.55; freq = 1.05; } else { amp = 0.04; freq = 0.5; dihedral = 0.18; }
+    }
+  } else if (d.state === 'takeoff') { fold = 1 - takeoffC; amp = 0.3 * takeoffC; freq = 1.2; }
+  else if (d.idle === 'stretch') {
+    const s = d.idleT / 2.6;
+    fold = 1 - Math.sin(Math.PI * Math.min(1, s)); amp = 0.4; freq = 0.9;
+  }
+  const k = Math.min(1, dt * 4);
+  d.wingFold += (fold - d.wingFold) * k;
+  d.wingAmp += (amp - d.wingAmp) * k;
+  d.wingFreq += (freq - d.wingFreq) * k;
+  d.wingDihedral += (dihedral - d.wingDihedral) * k;
+  d.wingP += dt * d.wingFreq * Math.PI * 2;
+  const f = d.wingFold, open = 1 - f, beat = Math.sin(d.wingP);
+  for (const w of d.model.wings) {
+    const s = w.s;
+    // folded: the arm rises up and back so the wrist peaks above the shoulders, and the hand runs
+    // back down to a wingtip beside the tail. Both membranes are rolled into the plane of that
+    // triangle and only partly gathered in, so the folded wing drapes down the side as a big sail.
+    w.shoulder.rotation.set(
+      open * d.wingAmp * 0.15 * Math.cos(d.wingP) + 0.61 * f,
+      s * 0.24 * f,
+      s * (open * (d.wingDihedral + d.wingAmp * beat) + 1.4 * f));
+    w.elbow.rotation.set(0, -s * 1.71 * f, s * open * d.wingAmp * 0.5 * Math.sin(d.wingP - 0.9));
+    w.fan.scale.z = 1 - 0.35 * f;
+    w.armMem.scale.z = 1 - 0.3 * f;
+  }
+  return -beat * 0.1 * d.wingAmp * open;
+}
+
+function animateDragon(d, dt) {
+  const md = d.model;
+  const hs = Math.hypot(d.vel.x, d.vel.z);
+  const move = Math.min(1, hs / 0.6);
+  const flying = d.state === 'fly' || d.state === 'land';
+  d.flyW += ((flying ? 1 : 0) - d.flyW) * Math.min(1, dt * 3);
+  const walkAmt = move * (1 - d.flyW);
+
+  // two steps per stride: the body bobs on each, rolls over the planted foot, and the hips swivel;
+  // running (when ridden) takes longer strides with the body crouched lower and leaning forward
+  const run = clamp((hs - 2) / 4, 0, 1) * (1 - d.flyW);
+  const stride = DRAGON_STRIDE + 0.6 * run;
+  d.phase = (d.phase + dt * hs / stride) % 1;
+  const P = d.phase * Math.PI * 2;
+  let bob = 0.04 * Math.cos(2 * P) * walkAmt - 0.1 * run, sway = Math.sin(P) * 0.06 * walkAmt, roll = Math.sin(P) * 0.05 * walkAmt;
+  let pitch = 0.05 + 0.02 * Math.sin(2 * P) * walkAmt - 0.1 * run;
+
+  // crouch before springing into the air (the legs bend to follow the lowered hips)
+  let takeoffC = 0;
+  if (d.state === 'takeoff') {
+    takeoffC = Math.min(1, d.stateT / 0.5);
+    bob -= 0.35 * takeoffC; pitch -= 0.15 * takeoffC;
+  }
+  // landing squash
+  d.landT = Math.max(0, d.landT - dt * 3);
+  bob -= 0.25 * d.landT;
+
+  // in the air: pitch with the climb, bank into turns, legs reach down on the way in to land
+  const yawRate = wrapAngle(d.yaw - d.prevYaw) / Math.max(dt, 1e-4);
+  d.prevYaw = d.yaw;
+  d.turn += (yawRate - d.turn) * Math.min(1, dt * 4);
+  const reach = d.state === 'land' || (d.state === 'fly' && d.fvy < -1) ? clamp(1 - (d.pos.y - d.groundY - 1) / 4, 0, 1) : 0;
+  d.reachW += (reach - d.reachW) * Math.min(1, dt * 4);
+  if (d.flyW > 0.001) {
+    pitch += (clamp(d.fvy * 0.05, -0.25, 0.3) - 0.05 + 0.2 * d.reachW) * d.flyW;
+    roll += clamp(d.turn * 0.6, -0.5, 0.5) * d.flyW;
+  }
+
+  // legs: the walk cycle solved onto the ground, blended into the flying pose
+  const R = stride * DRAGON_DUTY / 2 * walkAmt;
+  md.legs.forEach((L, i) => {
+    const q = (d.phase + i * 0.5) % 1;
+    let fwd, lift = 0, meta = 0.25, toe = 0;
+    if (q < DRAGON_DUTY) {
+      fwd = R * (1 - 2 * q / DRAGON_DUTY);
+      meta += 0.35 * smoothstep(DRAGON_DUTY - 0.2, DRAGON_DUTY, q) * walkAmt; // heel peels up to push off
+    } else {
+      const s = (q - DRAGON_DUTY) / (1 - DRAGON_DUTY), up = Math.sin(Math.PI * s);
+      fwd = -R + R * (1 - Math.cos(Math.PI * s));
+      lift = 0.32 * up * walkAmt;
+      meta += 0.4 * up * walkAmt;
+      toe = -0.7 * up * walkAmt; // toes curl under as the foot swings through
+    }
+    const j = dragonLegIK(fwd, DRAGON_HIP_Y + bob - 0.08 - lift, meta, toe);
+    j[0] -= pitch;
+    const air = d.flyW;
+    for (let k = 0; k < 4; k++) j[k] += (DRAGON_FLY_LEG[k] + (DRAGON_LAND_LEG[k] - DRAGON_FLY_LEG[k]) * d.reachW - j[k]) * air;
+    L.hip.rotation.x = j[0]; L.knee.rotation.x = j[1]; L.ankle.rotation.x = j[2]; L.toes.rotation.x = j[3];
+  });
+
+  // idle: look around, stretch the wings, and puff smoke from the nostrils
+  d.idleCd -= dt;
+  if (!d.idle && d.idleCd <= 0 && d.state === 'idle') {
+    const r = Math.random();
+    d.idle = r < 0.45 ? 'look' : r < 0.7 ? 'stretch' : 'smoke';
+    d.idleT = 0; d.lookTo = rnd(-0.9, 0.9);
+    d.idleCd = 3 + Math.random() * 5;
+  }
+  let neckYaw = clamp(d.turn * 0.25, -0.5, 0.5) * (1 - d.flyW), jawOpen = 0, headUp = 0;
+  if (d.idle) {
+    d.idleT += dt;
+    const len = d.idle === 'stretch' ? 2.6 : d.idle === 'smoke' ? 1.6 : 2.4;
+    const s = d.idleT / len, env = Math.sin(Math.PI * Math.min(1, s));
+    if (d.idle === 'look') neckYaw += d.lookTo * env;
+    else if (d.idle === 'stretch') headUp += 0.25 * env;
+    else {
+      headUp += 0.2 * env; jawOpen = 0.35 * env;
+      if (s > 0.3 && s < 0.7 && Math.random() < dt * 25) {
+        md.head.localToWorld(tmp.set(rnd(-0.12, 0.12), 0.12, -1.1));
+        const fx = -Math.sin(d.yaw), fz = -Math.cos(d.yaw);
+        spawnParticle(tmp, fx * rnd(0.6, 1.4), rnd(0.6, 1.4), fz * rnd(0.6, 1.4), Math.random() < 0.2 ? 0xff8a2a : Math.random() < 0.5 ? 0x9a9a9a : 0x6e6e6e, rnd(0.8, 1.4), -0.8, rnd(1.3, 2.2));
+      }
+    }
+    if (s >= 1 || d.state !== 'idle') d.idle = null;
+  }
+
+  bob += animateDragonWings(d, dt, takeoffC);
+
+  // apply
+  md.body.position.y = DRAGON_HIP_Y + bob + Math.sin(time * 1.6 + d.breath) * 0.012;
+  md.body.rotation.set(pitch, sway, roll);
+  let neckPitch = 0;
+  md.neckSegs.forEach((s, i) => {
+    s.rotation.x = DRAGON_NECK_REST[i] + (DRAGON_NECK_FLY[i] - DRAGON_NECK_REST[i]) * d.flyW + headUp * 0.4
+      + Math.sin(time * 1.3 + d.breath - i * 0.5) * 0.03;
+    s.rotation.y = neckYaw / 3 - sway * 0.8;
+    neckPitch += s.rotation.x;
+  });
+  // keep the head roughly level whatever the neck and body are doing; while walking it holds still
+  // in the air then darts forward on each step, like a chicken's
+  md.head.rotation.x = -(neckPitch + pitch) * 0.8 + headUp;
+  const step = (d.phase * 2) % 1, hold = step < 0.75 ? step / 0.75 : 1 - (step - 0.75) / 0.25;
+  md.head.position.z = DRAGON_HEAD_Z + (hold - 0.5) * 0.24 * walkAmt;
+  md.jaw.rotation.x = -jawOpen;
+
+  // tail held out level as a counterweight, swinging against the hips; streams straight out in flight
+  md.tail.rotation.x = 0.04 - pitch * 0.5;
+  md.tailSegs.forEach((s, i) => {
+    s.rotation.x = 0.015 * (1 - d.flyW) + Math.sin(time * 2 - i * 0.6) * 0.04 * d.flyW;
+    s.rotation.y = -Math.sin(P - i * 0.5) * 0.1 * walkAmt + Math.sin(time * 0.9 + d.breath - i * 0.5) * 0.05
+      - clamp(d.turn * 0.08, -0.12, 0.12);
+  });
+
+  d.blinkT -= dt;
+  if (d.blinkT <= 0) d.blinkT = 2 + Math.random() * 5;
+  for (const e of md.eyes) e.scale.y = d.blinkT < 0.14 ? 0.15 : 1;
+
+  md.root.position.copy(d.pos);
+  md.root.rotation.y = d.yaw;
+  md.root.updateMatrixWorld(true);
+  md.seat.getWorldPosition(d.seatWorld);
+}
+
+const DRAGON_HOME_RADIUS = 55; // flying dragons turn back toward the island past this
+function updateDragon(d, dt) {
+  d.aiTimer -= dt;
+  d.turnCd -= dt;
+  d.stateT += dt;
+  const gx = Math.floor(d.pos.x), gz = Math.floor(d.pos.z);
+  d.groundY = Math.max(columnTop(gx, gz), WATER) + 1;
+  const setState = (s, t) => { d.state = s; d.stateT = 0; d.aiTimer = t; };
+
+  if (d.rider) {
+    // steered by the player (see rideDragon)
+  } else if (d.state === 'fly' || d.state === 'land') {
+    // wander in lazy curves, heading back over the island if it strays out to sea
+    d.wanderYaw += Math.sin(time * 0.3 + d.breath) * dt * 0.6;
+    const hx = -d.pos.x, hz = -d.pos.z;
+    if (Math.hypot(hx, hz) > DRAGON_HOME_RADIUS) d.wanderYaw = lerpAngle(d.wanderYaw, Math.atan2(-hx, -hz), dt * 1.2);
+    const sp = d.state === 'land' ? 3 : 7;
+    const dx = -Math.sin(d.wanderYaw), dz = -Math.cos(d.wanderYaw);
+    const ahead = Math.max(columnTop(Math.floor(d.pos.x + dx * 6), Math.floor(d.pos.z + dz * 6)), WATER) + 1;
+    let vy;
+    if (d.state === 'fly') {
+      vy = clamp((Math.max(d.groundY, ahead) + d.cruise - d.pos.y) * 0.6, -3, 5);
+      // come down once the time's up, but only onto open ground (not the sea or a treetop)
+      const top = columnTop(gx, gz);
+      if (d.aiTimer <= 0 && top > WATER + 1 && getBlock(gx, top, gz) !== B.LEAVES) setState('land', 0);
+    } else {
+      vy = d.pos.y - Math.max(d.groundY, ahead) > 4 ? -4 : -2;
+      if (columnTop(gx, gz) <= WATER) setState('fly', 3); // drifted out over the water
+    }
+    if (d.hitWall) vy = 5;
+    if (d.pos.y > H + 20) vy = Math.min(vy, 0);
+    d.fvy += (vy - d.fvy) * Math.min(1, dt * 2);
+    d.vel.y = d.fvy + GRAVITY * dt; // cancels the gravity physics() is about to add
+    accelerate(d, dx * sp, dz * sp, dt, 1.5);
+    d.yaw = lerpAngle(d.yaw, d.wanderYaw, dt * 2);
+    d.glide = false;
+    physics(d, dt);
+    if (d.state === 'land' && d.onGround) { setState('idle', 2 + rand() * 3); d.landT = 1; d.fvy = 0; }
+  } else {
+    if (d.state === 'takeoff') {
+      if (d.stateT > 0.5) { setState('fly', 10 + rand() * 12); d.cruise = 9 + rand() * 9; d.fvy = 7; d.wanderYaw = d.yaw; }
+    } else if (d.inWater || (d.state === 'walk' && d.stuckT > 1.2)) setState('takeoff', 0);
+    else if (d.aiTimer <= 0) {
+      const r = rand();
+      if (r < 0.3) setState('idle', 2 + rand() * 4);
+      else if (r < 0.85) { setState('walk', 3 + rand() * 5); d.wanderYaw = rand() * Math.PI * 2; }
+      else setState('takeoff', 0);
+    }
+    let tx = 0, tz = 0;
+    if (d.state === 'walk') {
+      const dx = -Math.sin(d.wanderYaw), dz = -Math.cos(d.wanderYaw);
+      // turn around before walking into the sea
+      if (d.turnCd <= 0 && columnTop(Math.floor(d.pos.x + dx * 4), Math.floor(d.pos.z + dz * 4)) <= WATER) {
+        d.wanderYaw += Math.PI + (rand() - 0.5);
+        d.turnCd = 1;
+      }
+      tx = dx * d.walkSpeed; tz = dz * d.walkSpeed;
+      d.yaw = lerpAngle(d.yaw, d.wanderYaw, dt * 2.5);
+      if (d.hitWall && d.onGround) d.vel.y = 9;
+    }
+    d.stuckT = d.state === 'walk' && d.hitWall ? d.stuckT + dt : 0;
+    accelerate(d, tx, tz, dt, 3);
+    d.glide = false;
+    physics(d, dt);
+  }
+
+  animateDragon(d, dt);
+  const tagDist = d.pos.distanceTo(player.pos);
+  d.tag.visible = !d.rider && tagDist > 4 && tagDist < 20;
+}
+
+// Riding a dragon: run on the ground, Space to take off and climb, Shift to dive. With neither
+// held it keeps its height, hovering when slow. Coming down onto the ground lands it.
+const DRAGON_RUN_SPEED = 6, DRAGON_FLY_SPEED = 13;
+function rideDragon(d, dt, mx, mz, back, space, shift) {
+  const len = Math.hypot(mx, mz);
+  d.glide = false;
+  if (d.state === 'fly') {
+    if (len > 0) d.yaw = lerpAngle(d.yaw, Math.atan2(-mx, -mz), dt * 4);
+    const sp = DRAGON_FLY_SPEED * (back ? 0.5 : 1);
+    accelerate(d, mx * sp, mz * sp, dt, 2);
+    d.fvy += ((space ? 6 : shift ? -9 : 0) - d.fvy) * Math.min(1, dt * 3);
+    if (d.pos.y > H + 20) d.fvy = Math.min(d.fvy, 0);
+    if (d.pos.y < WATER + 0.6) d.fvy = Math.max(d.fvy, 0); // skim over the sea rather than dive in
+    d.vel.y = d.fvy + GRAVITY * dt; // cancels the gravity physics() is about to add
+    physics(d, dt);
+    if (d.onGround && d.fvy <= 0) { d.state = 'idle'; d.stateT = 0; d.landT = 1; d.fvy = 0; }
+    return;
+  }
+  if (d.state === 'takeoff') {
+    if (d.stateT > 0.3) { d.state = 'fly'; d.stateT = 0; d.fvy = 7; }
+  } else if (space) { d.state = 'takeoff'; d.stateT = 0.15; } // a quick crouch, then up
+  else d.state = len > 0 ? 'walk' : 'idle';
+  if (len > 0 && d.state !== 'takeoff') d.yaw = lerpAngle(d.yaw, Math.atan2(-mx, -mz), dt * 6);
+  const sp = d.state === 'takeoff' ? 0 : DRAGON_RUN_SPEED * (back ? 0.5 : 1) * (d.inWater ? 0.4 : 1);
+  accelerate(d, mx * sp, mz * sp, dt, 3);
+  if (d.hitWall && d.onGround && len > 0) d.vel.y = 9; // hop up single blocks
+  if (d.inWater && !space) d.vel.y = Math.max(d.vel.y, 1.5);
+  physics(d, dt);
+}
+
+function nameTag(text) {
+  const c = document.createElement('canvas'), ctx = c.getContext('2d');
+  ctx.font = 'bold 28px monospace';
+  const w = Math.ceil(ctx.measureText(text).width) + 20;
+  c.width = w; c.height = 40;
+  ctx.font = 'bold 28px monospace';
+  ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(0, 0, w, 40);
+  ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, w / 2, 21);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex }));
+  s.scale.set(w / 40 * 0.4, 0.4, 1);
+  return s;
+}
+
+// ---------------------------------------------------------------- particles
+const particles = [];
+const pGeo = new THREE.BoxGeometry(0.1, 0.1, 0.1);
+for (let i = 0; i < 260; i++) {
+  const m = new THREE.Mesh(pGeo, new THREE.MeshBasicMaterial({ color: 0xffffff }));
+  m.visible = false;
+  scene.add(m);
+  particles.push({ m, vel: new THREE.Vector3(), life: 0, max: 1, grav: 0, size: 1 });
+}
+let pNext = 0;
+function spawnParticle(pos, vx, vy, vz, color, life, grav, size) {
+  const p = particles[pNext++ % particles.length];
+  p.m.position.copy(pos);
+  p.vel.set(vx, vy, vz);
+  p.m.material.color.setHex(color);
+  p.life = p.max = life; p.grav = grav; p.size = size;
+  p.m.scale.setScalar(size);
+  p.m.visible = true;
+}
+function updateParticles(dt) {
+  for (const p of particles) {
+    if (p.life <= 0) continue;
+    p.life -= dt;
+    if (p.life <= 0) { p.m.visible = false; continue; }
+    p.vel.y -= p.grav * dt;
+    p.m.position.addScaledVector(p.vel, dt);
+    p.m.scale.setScalar(p.size * (p.life / p.max));
+    p.m.rotation.x += dt * 3; p.m.rotation.y += dt * 2;
+  }
+}
+const rnd = (a, b) => a + Math.random() * (b - a);
+const SPARKLE_COLORS = [...RAINBOW_HEX, 0xffffff, 0xffffff];
+
+// ---------------------------------------------------------------- spawn player + animals
+function findLand(cx, cz, r) {
+  for (let i = 0; i < 400; i++) {
+    const x = Math.floor(cx + (rand() * 2 - 1) * r), z = Math.floor(cz + (rand() * 2 - 1) * r);
+    const t = columnTop(x, z);
+    if (t > WATER + 1 && getBlock(x, t, z) === B.GRASS) return new THREE.Vector3(x + 0.5, t + 1, z + 0.5);
+  }
+  return null;
+}
+
+const player = new Entity(0.3, 1.8);
+player.riding = null;
+const playerModel = makePlayerModel();
+player.pos.copy(findLand(0, 0, 15) || findLand(0, 0, 60) || new THREE.Vector3(0.5, H - 5, 0.5));
+
+// face: white 'blaze' or 'star'; socks: legs (FL, FR, HL, HR) with white socks; points: black
+// lower legs and ear tips; dorsal: a stripe down the back; dapples: light spots; pad: saddle cloth
+const HORSE_COATS = [
+  { coat: 'Chestnut', body: 0x9a5527, mane: 0x4a2410, face: 'blaze', socks: [2, 3], pad: 0x2f5fa8 },
+  { coat: 'Bay', body: 0x6e3f1d, mane: 0x1c1410, points: true, face: 'star', pad: 0xb03030 },
+  { coat: 'Black', body: 0x2a2626, mane: 0x111111, face: 'star', socks: [0], pad: 0xd8b03a },
+  { coat: 'White', body: 0xe9e4da, mane: 0xc9c0b0, pad: 0x2e7d4f },
+  { coat: 'Gray', body: 0x8d8d8d, mane: 0x4b4b4b, dapples: true, pad: 0x7a3fa0 },
+  { coat: 'Palomino', body: 0xd9a95e, mane: 0xf4ead0, face: 'blaze', socks: [1, 2], pad: 0x1f6f78 },
+  { coat: 'Buckskin', body: 0xc8a064, mane: 0x2a1d12, points: true, dorsal: true, pad: 0xc4572a },
+];
+const HORSE_NAMES = ['Biscuit', 'Thunder', 'Daisy', 'Pepper', 'Clover', 'Maple', 'Comet', 'Hazel', 'Shadow', 'Willow', 'Pumpkin', 'Rusty', 'Nugget', 'Oreo'];
+const UNICORN_NAMES = ['Sparkle', 'Stardust', 'Moonbeam', 'Twinkle'];
+const UNICORN_COAT = { coat: 'Unicorn', body: 0xfdf8ff, mane: 0xffffff, pad: 0xcdb4ff };
+
+const mobs = [];
+function makeMob(kind, coat, name, p) {
+  const unicorn = kind === 'unicorn';
+  const m = new Entity(0.45, 1.5);
+  Object.assign(m, {
+    kind, name, coat: coat.coat,
+    speed: unicorn ? 12 : 8.5,
+    walkSpeed: unicorn ? 1.8 : 1.4,
+    runSpeed: unicorn ? 7.5 : 6.5,
+    model: makeHorseModel(coat, unicorn),
+    state: 'idle', aiTimer: rand() * 3, phase: 0, turnCd: 0, rider: null,
+    // animation state
+    gw: { walk: 1, trot: 0, gallop: 0 }, airTime: 0, airW: 0, landT: 0, rearT: 0, rearR: 0,
+    idle: null, idleCd: 2 + Math.random() * 4, grazeW: 0, turn: 0, prevYaw: 0,
+    earT: Math.random() * 3, earFlick: 0, earSide: 0, blinkT: Math.random() * 4, swish: 0,
+    breath: Math.random() * 6, seatWorld: new THREE.Vector3(),
+    baseH: 1.5, riddenH: 2.4, seatRestY: SEAT_REST_Y,
+    wingFold: 1, wingAmp: 0, wingFreq: 1, wingDihedral: 0.1, wingP: 0,
+    label: unicorn ? `${name} the Unicorn` : `${name} the ${coat.coat} horse`,
+  });
+  m.pos.copy(p);
+  m.yaw = m.wanderYaw = m.prevYaw = rand() * Math.PI * 2;
+  m.tag = nameTag(unicorn ? '✨ ' + name + ' ✨' : name);
+  m.tag.position.set(0, 2.45, 0);
+  m.model.root.add(m.tag);
+  mobs.push(m);
+  return m;
+}
+
+// one unicorn and one horse right next to the start, the rest scattered around the island
+const near = (r) => findLand(player.pos.x, player.pos.z, r);
+makeMob('unicorn', UNICORN_COAT, UNICORN_NAMES[0], near(6) || player.pos.clone());
+makeMob('horse', HORSE_COATS[0], HORSE_NAMES[0], near(7) || player.pos.clone());
+for (let i = 1; i < UNICORN_NAMES.length; i++) {
+  const p = findLand(0, 0, 60);
+  if (p) makeMob('unicorn', UNICORN_COAT, UNICORN_NAMES[i], p);
+}
+for (let i = 1; i < 12; i++) {
+  const p = findLand(0, 0, 60);
+  if (p) makeMob('horse', HORSE_COATS[i % HORSE_COATS.length], HORSE_NAMES[i % HORSE_NAMES.length], p);
+}
+
+const DRAGON_COLORS = [
+  { name: 'Ember', body: 0xa8302a, belly: 0xf0b860, wing: 0xe2683e, spike: 0x3a1a14, horn: 0xeadfc8, eye: 0xffd23a },
+  { name: 'Jade', body: 0x2f7d45, belly: 0xd6dd8a, wing: 0x72c08a, spike: 0x1b4528, horn: 0xe8e0c0, eye: 0xffb030 },
+  { name: 'Sapphire', body: 0x2c56a8, belly: 0xa8d0f0, wing: 0x6c9ae6, spike: 0x172656, horn: 0xdcdcec, eye: 0xfff07a },
+  { name: 'Amethyst', body: 0x6a3aa0, belly: 0xe2c4f0, wing: 0xb47ce0, spike: 0x2e1650, horn: 0xf0e4d0, eye: 0x7affd0 },
+];
+const dragons = [];
+function makeDragon(c, p) {
+  const d = new Entity(0.6, 2.3);
+  Object.assign(d, {
+    kind: 'dragon', name: c.name, label: `${c.name} the Dragon`, model: makeDragonModel(c), walkSpeed: 1.8,
+    rider: null, baseH: 2.3, riddenH: 3.4, seatRestY: DRAGON_HIP_Y + 0.68, seatWorld: new THREE.Vector3(),
+    state: 'idle', stateT: 0, aiTimer: 1 + rand() * 3, turnCd: 0, stuckT: 0, cruise: 12, groundY: p.y,
+    phase: 0, flyW: 0, reachW: 0, fvy: 0, landT: 0, turn: 0, idle: null, idleT: 0, idleCd: 2 + Math.random() * 4, lookTo: 0,
+    blinkT: Math.random() * 4, breath: Math.random() * 6, glideT: 0, flapping: false,
+    wingFold: 1, wingAmp: 0, wingFreq: 1, wingDihedral: 0.12, wingP: 0,
+  });
+  d.pos.copy(p);
+  d.yaw = d.wanderYaw = d.prevYaw = rand() * Math.PI * 2;
+  d.tag = nameTag('🐉 ' + c.name);
+  d.tag.position.set(0, 3.6, 0);
+  d.model.root.add(d.tag);
+  dragons.push(d);
+  return d;
+}
+// one dragon close enough to spot from the start, the rest out around the island
+DRAGON_COLORS.forEach((c, i) => {
+  const p = i === 0 ? near(22) : findLand(0, 0, 60);
+  if (p) makeDragon(c, p);
+});
+
+const totalUnicorns = mobs.filter(m => m.kind === 'unicorn').length;
+const totalHorses = mobs.length - totalUnicorns;
+const totalDragons = dragons.length;
+const ridden = new Set();
+// build the land around the start before the first frame; the rest streams in while playing
+updateChunks(400);
+
+// start out facing the unicorn
+let yaw = 0, pitch = -0.15;
+{
+  const u = mobs[0];
+  yaw = Math.atan2(-(u.pos.x - player.pos.x), -(u.pos.z - player.pos.z));
+}
+let camMode = 1; // 0 = first person, 1 = third person
+let selected = 0;
+
+// ---------------------------------------------------------------- riding
+function nearestMob() {
+  let best = null, bd = Infinity;
+  const check = (m, reach) => {
+    if (m.rider) return;
+    const d = Math.hypot(m.pos.x - player.pos.x, m.pos.z - player.pos.z);
+    if (d < reach && d < bd && Math.abs(m.pos.y - player.pos.y) < 2.5) { bd = d; best = m; }
+  };
+  for (const m of mobs) check(m, 3.2);
+  for (const d of dragons) check(d, 3.6);
+  return best;
+}
+function mount(m) {
+  player.riding = m;
+  m.rider = player;
+  m.h = m.riddenH; // room for the rider's head
+  m.vel.set(0, 0, 0);
+  m.idle = null;
+  ridden.add(m);
+  const p = m.pos.clone(); p.y += m.seatRestY + 0.3;
+  if (m.kind === 'dragon') {
+    // a snort of smoke and embers
+    if (m.state === 'land') m.state = 'fly';
+    else if (m.state !== 'fly') { m.state = 'idle'; m.stateT = 0; }
+    for (let i = 0; i < 18; i++) spawnParticle(p, rnd(-1.5, 1.5), rnd(1, 3), rnd(-1.5, 1.5), i % 3 ? 0x8a8a8a : 0xff8a2a, rnd(0.8, 1.3), 1, rnd(1.2, 2));
+    return;
+  }
+  m.state = 'idle';
+  m.rearT = REAR_TIME; // excited to see you!
+  for (let i = 0; i < 18; i++) spawnParticle(p, rnd(-1.5, 1.5), rnd(1, 3), rnd(-1.5, 1.5), i % 2 ? 0xff4f8b : 0xff9ad5, rnd(0.8, 1.3), 1, rnd(1.2, 2));
+}
+function dismount() {
+  const m = player.riding;
+  m.rider = null; m.h = m.baseH;
+  player.riding = null;
+  player.vel.set(0, 0, 0);
+  if (m.kind === 'dragon') m.aiTimer = 1 + rand() * 2; // a dragon left in the air soon comes down
+  const rx = Math.cos(m.yaw), rz = -Math.sin(m.yaw), off = m.kind === 'dragon' ? 1.5 : 1.1;
+  for (const s of [1, -1]) {
+    const px = m.pos.x + rx * s * off, pz = m.pos.z + rz * s * off;
+    if (!boxCollides(px, m.pos.y, pz, player.hw, player.h)) { player.pos.set(px, m.pos.y, pz); return; }
+  }
+  player.pos.copy(m.pos);
+}
+
+// ---------------------------------------------------------------- block targeting
+function lookDir() {
+  return new THREE.Vector3(-Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch));
+}
+function eyePos() {
+  if (player.riding) {
+    // follow the saddle up and down, but only half as much so the camera isn't too bouncy
+    const m = player.riding, seatLift = m.seatWorld.y - (m.pos.y + m.seatRestY);
+    return new THREE.Vector3(m.pos.x, m.pos.y + m.seatRestY + 0.94 + seatLift * 0.5, m.pos.z);
+  }
+  return new THREE.Vector3(player.pos.x, player.pos.y + 1.62, player.pos.z);
+}
+function raycast(o, d, maxD) {
+  let x = Math.floor(o.x), y = Math.floor(o.y), z = Math.floor(o.z);
+  const sx = Math.sign(d.x), sy = Math.sign(d.y), sz = Math.sign(d.z);
+  const tdx = d.x ? Math.abs(1 / d.x) : Infinity, tdy = d.y ? Math.abs(1 / d.y) : Infinity, tdz = d.z ? Math.abs(1 / d.z) : Infinity;
+  let tmx = d.x > 0 ? (x + 1 - o.x) * tdx : d.x < 0 ? (o.x - x) * tdx : Infinity;
+  let tmy = d.y > 0 ? (y + 1 - o.y) * tdy : d.y < 0 ? (o.y - y) * tdy : Infinity;
+  let tmz = d.z > 0 ? (z + 1 - o.z) * tdz : d.z < 0 ? (o.z - z) * tdz : Infinity;
+  let nx = 0, ny = 0, nz = 0, t = 0;
+  while (t <= maxD) {
+    if (getBlock(x, y, z)) return { x, y, z, nx, ny, nz };
+    if (tmx < tmy && tmx < tmz) { x += sx; t = tmx; tmx += tdx; nx = -sx; ny = 0; nz = 0; }
+    else if (tmy < tmz) { y += sy; t = tmy; tmy += tdy; nx = 0; ny = -sy; nz = 0; }
+    else { z += sz; t = tmz; tmz += tdz; nx = 0; ny = 0; nz = -sz; }
+  }
+  return null;
+}
+const highlight = new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.BoxGeometry(1.004, 1.004, 1.004)),
+  new THREE.LineBasicMaterial({ color: 0x000000 })
+);
+scene.add(highlight);
+let target = null;
+
+function overlapsBlock(e, x, y, z) {
+  return e.pos.x + e.hw > x && e.pos.x - e.hw < x + 1 && e.pos.y + e.h > y && e.pos.y < y + 1 && e.pos.z + e.hw > z && e.pos.z - e.hw < z + 1;
+}
+function breakBlock() {
+  if (!target || target.y === 0) return; // bedrock floor stays
+  const t = getBlock(target.x, target.y, target.z);
+  setBlock(target.x, target.y, target.z, B.AIR);
+  const c = new THREE.Vector3(target.x + 0.5, target.y + 0.5, target.z + 0.5);
+  for (let i = 0; i < 12; i++) {
+    const col = t === B.RAINBOW ? RAINBOW_HEX[i % 6] : BLOCK_COLORS[t];
+    spawnParticle(c, rnd(-2, 2), rnd(1, 4), rnd(-2, 2), col, rnd(0.4, 0.8), 15, rnd(0.9, 1.5));
+  }
+}
+function placeBlock() {
+  if (!target) return;
+  const x = target.x + target.nx, y = target.y + target.ny, z = target.z + target.nz;
+  if (!inBounds(y) || getBlock(x, y, z)) return;
+  if (overlapsBlock(player.riding || player, x, y, z)) return;
+  for (const m of mobs) if (overlapsBlock(m, x, y, z)) return;
+  for (const d of dragons) if (overlapsBlock(d, x, y, z)) return;
+  setBlock(x, y, z, HOTBAR[selected]);
+}
+
+// ---------------------------------------------------------------- input
+const keys = {};
+const overlay = document.getElementById('overlay');
+const isLocked = () => document.pointerLockElement === renderer.domElement;
+overlay.addEventListener('click', () => renderer.domElement.requestPointerLock());
+document.addEventListener('pointerlockchange', () => {
+  overlay.style.display = isLocked() ? 'none' : 'flex';
+  document.getElementById('go').textContent = 'Click to continue';
+  if (!isLocked()) for (const k in keys) keys[k] = false;
+});
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (!isLocked()) return;
+  if (e.code === 'Space') e.preventDefault();
+  if (e.repeat) return;
+  if (e.code === 'KeyE') {
+    if (player.riding) dismount();
+    else { const m = nearestMob(); if (m) mount(m); }
+  }
+  if (e.code === 'KeyV') camMode = 1 - camMode;
+  if (e.code.startsWith('Digit')) {
+    const n = +e.code.slice(5);
+    if (n >= 1 && n <= HOTBAR.length) selectSlot(n - 1);
+  }
+});
+addEventListener('keyup', e => { keys[e.code] = false; });
+addEventListener('mousemove', e => {
+  if (!isLocked()) return;
+  yaw -= e.movementX * 0.0025;
+  pitch = Math.max(-1.55, Math.min(1.55, pitch - e.movementY * 0.0025));
+});
+addEventListener('mousedown', e => {
+  if (!isLocked()) return;
+  if (e.button === 0) breakBlock();
+  if (e.button === 2) placeBlock();
+});
+addEventListener('contextmenu', e => e.preventDefault());
+addEventListener('wheel', e => {
+  if (!isLocked()) return;
+  selectSlot((selected + (e.deltaY > 0 ? 1 : -1) + HOTBAR.length) % HOTBAR.length);
+});
+
+// ---------------------------------------------------------------- HUD
+const hotbarEl = document.getElementById('hotbar');
+const slotEls = HOTBAR.map((t, i) => {
+  const s = document.createElement('div');
+  s.className = 'slot';
+  s.title = BLOCK_NAMES[t];
+  const c = document.createElement('canvas');
+  c.width = c.height = TS;
+  c.getContext('2d').drawImage(atlas, ICON_TILE[t] * TS, 0, TS, TS, 0, 0, TS, TS);
+  const n = document.createElement('span');
+  n.textContent = i + 1;
+  s.append(c, n);
+  hotbarEl.append(s);
+  return s;
+});
+function selectSlot(i) {
+  selected = i;
+  slotEls.forEach((s, j) => s.classList.toggle('sel', j === i));
+}
+selectSlot(0);
+
+const clockEl = document.getElementById('clock');
+const statusEl = document.getElementById('status'), scoreEl = document.getElementById('score'), promptEl = document.getElementById('prompt');
+function setText(el, txt) { if (el._t !== txt) { el._t = txt; el.textContent = txt; } }
+function updateHud() {
+  const m = player.riding;
+  if (m) {
+    setText(statusEl, m.kind === 'dragon'
+      ? `Riding ${m.label}\nSpace: take off / fly up · Shift: dive\nE: get off`
+      : m.kind === 'unicorn'
+      ? `Riding ${m.label}\nSpace: fly up · Shift: fly down\nE: get off`
+      : `Riding ${m.label}\nSpace: jump · E: get off`);
+    setText(promptEl, '');
+  } else {
+    setText(statusEl, `On foot · Block: ${BLOCK_NAMES[HOTBAR[selected]]}`);
+    const n = nearestMob();
+    setText(promptEl, n ? `Press E to ride ${n.label}` : '');
+  }
+  let u = 0, h = 0, g = 0;
+  for (const r of ridden) r.kind === 'unicorn' ? u++ : r.kind === 'dragon' ? g++ : h++;
+  setText(scoreEl, `Unicorns ridden: ${u}/${totalUnicorns}\nHorses ridden: ${h}/${totalHorses}\nDragons ridden: ${g}/${totalDragons}` +
+    (totalUnicorns && u === totalUnicorns ? '\n✨ You rode every unicorn! ✨' : '') +
+    (totalDragons && g === totalDragons ? '\n🐉 You rode every dragon! 🐉' : ''));
+}
+
+// ---------------------------------------------------------------- update
+const tmp = new THREE.Vector3();
+let time = 0;
+
+function updatePlayer(dt) {
+  const locked = isLocked();
+  let f = 0, s = 0;
+  if (locked) {
+    if (keys.KeyW || keys.ArrowUp) f += 1;
+    if (keys.KeyS || keys.ArrowDown) f -= 1;
+    if (keys.KeyD || keys.ArrowRight) s += 1;
+    if (keys.KeyA || keys.ArrowLeft) s -= 1;
+  }
+  const space = locked && keys.Space;
+  const shift = locked && (keys.ShiftLeft || keys.ShiftRight);
+  let mx = -Math.sin(yaw) * f + Math.cos(yaw) * s;
+  let mz = -Math.cos(yaw) * f - Math.sin(yaw) * s;
+  const len = Math.hypot(mx, mz);
+  if (len > 0) { mx /= len; mz /= len; }
+
+  const m = player.riding;
+  if (m && m.rearT > 0) { mx = mz = 0; } // hold on while it rears
+  if (m && m.kind === 'dragon') {
+    rideDragon(m, dt, mx, mz, f < 0, space, shift);
+    player.pos.copy(m.pos);
+    player.vel.set(0, 0, 0);
+  } else if (m) {
+    const len = Math.hypot(mx, mz);
+    const sp = m.speed * (f < 0 ? 0.5 : 1) * (m.inWater ? 0.4 : 1);
+    if (len > 0) m.yaw = lerpAngle(m.yaw, Math.atan2(-mx, -mz), dt * 8);
+    m.glide = false;
+    if (m.kind === 'unicorn') {
+      accelerate(m, mx * sp, mz * sp, dt, 8);
+      if (space) m.vel.y = Math.min(m.vel.y + 40 * dt, 7);
+      else if (shift) m.vel.y = -8;
+      else if (!m.onGround) m.glide = true;
+      if (m.pos.y > H + 30) m.vel.y = Math.min(m.vel.y, 0);
+    } else {
+      accelerate(m, mx * sp, mz * sp, dt, 3);
+      if (space && m.onGround) m.vel.y = 10;
+      // swimming only ever pushes up, so it can't cut short a jump, and climbs out up a bank
+      if (space && m.inWater) m.vel.y = Math.max(m.vel.y, 3, m.hitWall && len > 0 ? ledgeJump(m, mx, mz) : 0);
+    }
+    if (m.hitWall && m.onGround && len > 0) m.vel.y = 10; // hop up single blocks
+    if (m.inWater && !space) m.vel.y = Math.max(m.vel.y, 1.5);
+    physics(m, dt);
+    player.pos.copy(m.pos);
+    player.vel.set(0, 0, 0);
+  } else {
+    const sp = (shift ? 6.5 : 4.3) * (player.inWater ? 0.5 : 1);
+    accelerate(player, mx * sp, mz * sp, dt);
+    if (space) {
+      if (player.onGround) player.vel.y = 8.6;
+      // swimming only ever pushes up, so it can't cut short a jump off the sea floor; swimming
+      // into a bank climbs out onto it
+      if (player.inWater) player.vel.y = Math.max(player.vel.y, 3.5, player.hitWall && len > 0 ? ledgeJump(player, mx, mz) : 0);
+    }
+    physics(player, dt);
+  }
+}
+
+function updateMob(m, dt) {
+  if (!m.rider) {
+    m.aiTimer -= dt;
+    m.turnCd -= dt;
+    if (m.aiTimer <= 0) {
+      const r = rand();
+      if (r < 0.35) { m.state = 'idle'; m.aiTimer = 2 + rand() * 3; }
+      else if (r < 0.55) { m.state = 'graze'; m.aiTimer = 3 + rand() * 4; }
+      else if (r < 0.65) { m.state = 'run'; m.aiTimer = 2 + rand() * 2; m.wanderYaw = rand() * Math.PI * 2; m.runTo = rand() < 0.5 ? 4.2 : m.runSpeed; }
+      else { m.state = 'walk'; m.aiTimer = 2 + rand() * 4; m.wanderYaw = rand() * Math.PI * 2; }
+    }
+    let tx = 0, tz = 0;
+    if (m.rearT > 0) m.state = 'idle';
+    if (m.state === 'walk' || m.state === 'run') {
+      const sp = m.state === 'run' ? m.runTo : m.walkSpeed; // runTo: trot or gallop
+      const dx = -Math.sin(m.wanderYaw), dz = -Math.cos(m.wanderYaw), look = 2.5 + sp * 0.4;
+      // turn around before walking into the sea or off the island
+      if (m.turnCd <= 0 && columnTop(Math.floor(m.pos.x + dx * look), Math.floor(m.pos.z + dz * look)) <= WATER) {
+        m.wanderYaw += Math.PI + (rand() - 0.5);
+        m.turnCd = 1;
+      }
+      tx = dx * sp; tz = dz * sp;
+      m.yaw = lerpAngle(m.yaw, m.wanderYaw, dt * 4);
+      if (m.hitWall && m.onGround) m.vel.y = 9;
+    }
+    accelerate(m, tx, tz, dt, 3);
+    if (m.inWater) m.vel.y = Math.max(m.vel.y, 2, m.hitWall ? ledgeJump(m, -Math.sin(m.yaw), -Math.cos(m.yaw)) : 0);
+    m.glide = false;
+    physics(m, dt);
+  }
+
+  animateHorse(m, dt);
+  const md = m.model;
+  const hs = Math.hypot(m.vel.x, m.vel.z);
+  const tagDist = m.pos.distanceTo(player.pos);
+  m.tag.visible = !m.rider && tagDist > 3 && tagDist < 14;
+
+  // unicorn sparkles: a rainbow trail when moving, a twinkle from the horn when idle
+  if (m.kind === 'unicorn') {
+    const moving = hs > 1.5 || !m.onGround;
+    if (moving) {
+      tmp.set(m.pos.x + Math.sin(m.yaw) * 0.9 + rnd(-0.3, 0.3), m.pos.y + rnd(0.5, 1.3), m.pos.z + Math.cos(m.yaw) * 0.9 + rnd(-0.3, 0.3));
+      spawnParticle(tmp, rnd(-0.3, 0.3), rnd(0, 0.6), rnd(-0.3, 0.3), SPARKLE_COLORS[Math.floor(Math.random() * SPARKLE_COLORS.length)], rnd(0.6, 1), -0.5, rnd(0.6, 1.1));
+    } else if (Math.random() < dt * 4 && md.horn) {
+      md.horn.getWorldPosition(tmp);
+      spawnParticle(tmp, rnd(-0.4, 0.4), rnd(0.3, 0.8), rnd(-0.4, 0.4), SPARKLE_COLORS[Math.floor(Math.random() * SPARKLE_COLORS.length)], rnd(0.6, 1), -0.3, rnd(0.7, 1.1));
+    }
+  }
+}
+
+function updatePlayerModel(dt) {
+  const pm = playerModel;
+  pm.root.visible = camMode === 1;
+  const m = player.riding;
+  if (m) {
+    // sit in the saddle, tilt with the animal, lean forward at a gallop, when it rears, or in flight
+    const body = m.model.body, dragon = m.kind === 'dragon';
+    const move = Math.min(1, Math.hypot(m.vel.x, m.vel.z) / 0.8);
+    const lean = dragon ? -0.3 * m.flyW * move : -0.3 * m.gw.gallop * move - 0.45 * m.rearR;
+    pm.root.rotation.set(body.rotation.x + lean, m.yaw, body.rotation.z);
+    tmp.set(0, 0.675, 0).applyEuler(pm.root.rotation);
+    pm.root.position.copy(m.seatWorld).sub(tmp);
+    const straddle = dragon ? 0.8 : 0.6; // a dragon's back is broader
+    pm.legL.rotation.set(0.4, 0, -straddle);
+    pm.legR.rotation.set(0.4, 0, straddle);
+    const rein = 0.75 + Math.sin(m.phase * Math.PI * 4) * 0.08 * move;
+    pm.armL.rotation.set(rein, 0, 0);
+    pm.armR.rotation.set(rein, 0, 0);
+  } else {
+    pm.root.rotation.x = pm.root.rotation.z = 0;
+    pm.root.position.copy(player.pos);
+    pm.root.rotation.y = lerpAngle(pm.root.rotation.y, yaw, dt * 10);
+    const hs = Math.hypot(player.vel.x, player.vel.z);
+    player.phase = (player.phase || 0) + dt * hs * 2.2;
+    const a = Math.sin(player.phase) * Math.min(0.9, hs * 0.2);
+    pm.legL.rotation.set(a, 0, 0);
+    pm.legR.rotation.set(-a, 0, 0);
+    pm.armL.rotation.set(-a, 0, 0);
+    pm.armR.rotation.set(a, 0, 0);
+  }
+  pm.head.rotation.y = Math.max(-1.2, Math.min(1.2, wrapAngle(yaw - pm.root.rotation.y)));
+  pm.head.rotation.x = pitch * 0.8;
+}
+
+function updateCamera() {
+  const eye = eyePos();
+  const dir = lookDir();
+  camera.rotation.set(pitch, yaw, 0);
+  if (camMode === 1) {
+    // pull the camera back behind the player, stopping short of any block in the way
+    const maxDist = !player.riding ? 4 : player.riding.kind === 'dragon' ? 8 : 6;
+    let d = 0;
+    while (d < maxDist) {
+      tmp.copy(eye).addScaledVector(dir, -(d + 0.3));
+      if (tmp.y < 0 || getBlock(Math.floor(tmp.x), Math.floor(tmp.y), Math.floor(tmp.z))) break;
+      d += 0.1;
+    }
+    camera.position.copy(eye).addScaledVector(dir, -d);
+  } else {
+    camera.position.copy(eye);
+  }
+
+  target = raycast(eye, dir, REACH);
+  highlight.visible = !!target;
+  if (target) highlight.position.set(target.x + 0.5, target.y + 0.5, target.z + 0.5);
+}
+
+// ---------------------------------------------------------------- day / night cycle
+const DAY_SECONDS = 600; // one full day takes 10 minutes (hold T to speed it up)
+const SUN_TILT = 0.45;   // the sun's path leans south, peaking ~64° up at noon
+const urlTime = new URLSearchParams(location.search).get('time');
+let hour = urlTime !== null && !isNaN(+urlTime) ? +urlTime % 24 : 5.6; // start just before sunrise
+const sunDir = new THREE.Vector3(), moonDir = new THREE.Vector3(), lightDir = new THREE.Vector3();
+const skyAxis = new THREE.Vector3(0, -Math.sin(SUN_TILT), Math.cos(SUN_TILT));
+const lastSkySun = new THREE.Vector3(9, 9, 9);
+const sunColor = new THREE.Color(), fogColor = new THREE.Color(), zenColor = new THREE.Color(), warmColor = new THREE.Color();
+const ZENITH = new THREE.Vector3(0, 1, 0), MOONLIGHT = new THREE.Color(0.55, 0.65, 1.0);
+const smoothstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const trans = [0, 0, 0];
+let sunUp = 1, dayAmt = 1;
+
+// sky radiance in a direction, tone mapped like the sky shader, as a linear THREE.Color
+function skyColorAt(dir, out) {
+  const r = [0, 0, 0];
+  skyRadiance(dir, sunDir, SUN_INTENSITY, r);
+  skyRadiance(dir, moonDir, MOON_INTENSITY, r);
+  const ms = smoothstep(-0.32, 0.0, sunDir.y);
+  for (let c = 0; c < 3; c++) r[c] += MS_FILL[c] * ms;
+  const t = toneMapSky(r), nf = 1 - 0.5 * Math.max(dir.y, 0);
+  return out.setRGB(t[0] + NIGHT_SKY.x * nf, t[1] + NIGHT_SKY.y * nf, t[2] + NIGHT_SKY.z * nf, THREE.SRGBColorSpace);
+}
+
+function updateSky(dt) {
+  const speed = isLocked() && keys.KeyT ? 40 : 1;
+  hour = (hour + dt * speed * 24 / DAY_SECONDS) % 24;
+  const a = (hour - 6) / 24 * Math.PI * 2;
+  sunDir.set(Math.cos(a), Math.sin(a) * Math.cos(SUN_TILT), Math.sin(a) * Math.sin(SUN_TILT)).normalize();
+  moonDir.set(-sunDir.x, -sunDir.y, -sunDir.z + 0.2).normalize();
+  const sunY = sunDir.y;
+
+  // re-render the sky cube once the sun has moved a little
+  if (lastSkySun.distanceTo(sunDir) > 0.002) {
+    skyMat.uniforms.sunDir.value.copy(sunDir);
+    skyMat.uniforms.moonDir.value.copy(moonDir);
+    skyCubeCam.update(renderer, skyScene);
+    lastSkySun.copy(sunDir);
+  }
+
+  // sunlight colour = what survives the trip through the air (white at noon, deep orange at sunset)
+  sunTransmittance(sunDir, trans);
+  const tMax = Math.max(trans[0], trans[1], trans[2], 1e-4);
+  sunColor.setRGB(trans[0] / tMax, trans[1] / tMax, trans[2] / tMax);
+  sunUp = smoothstep(-0.03, 0.1, sunY);
+  dayAmt = smoothstep(-0.15, 0.3, sunY);
+  const moonUp = smoothstep(-0.02, -0.15, sunY) * smoothstep(-0.05, 0.1, moonDir.y);
+
+  // one shadow-casting light: the sun by day, the moon by night
+  if (sunY > -0.04) {
+    lightDir.copy(sunDir);
+    sunLight.color.copy(sunColor);
+    sunLight.intensity = 2.4 * sunUp * Math.sqrt(tMax);
+  } else {
+    lightDir.copy(moonDir);
+    sunLight.color.copy(MOONLIGHT);
+    sunLight.intensity = 0.6 * moonUp;
+  }
+  if (lightDir.y < 0.06) lightDir.y = 0.06; // keep grazing shadows from stretching to infinity
+  lightDir.normalize();
+  const cx = Math.round(player.pos.x), cz = Math.round(player.pos.z), cy = Math.round(player.pos.y);
+  sunLight.target.position.set(cx, cy, cz);
+  sunLight.position.set(cx, cy, cz).addScaledVector(lightDir, 160);
+
+  // sky light: blue from above by day, warm from the horizon around sunrise/sunset, cool at night
+  skyColorAt(ZENITH, zenColor);
+  const zMax = Math.max(zenColor.r, zenColor.g, zenColor.b, 1e-4);
+  zenColor.multiplyScalar(1 / zMax);
+  hemi.color.setRGB(1, 1, 1).lerp(zenColor, 0.45);
+  warmColor.copy(skyColorAt(tmp.set(sunDir.x, 0.05, sunDir.z).normalize(), warmColor));
+  const wMax = Math.max(warmColor.r, warmColor.g, warmColor.b, 1e-4);
+  const golden = smoothstep(0.45, 0.0, Math.abs(sunY)) * smoothstep(-0.2, -0.02, sunY);
+  hemi.color.lerp(warmColor.multiplyScalar(1 / wMax), 0.35 * golden);
+  hemi.color.lerp(MOONLIGHT, 1 - dayAmt);
+  hemi.groundColor.setRGB(hemi.color.r * 0.62, hemi.color.g * 0.6, hemi.color.b * 0.48);
+  hemi.intensity = 0.65 + 0.85 * dayAmt;
+
+  // fog takes the colour of the horizon in the direction you're looking
+  const look = lookDir();
+  skyColorAt(tmp.set(look.x, 0.04, look.z).normalize(), fogColor);
+  const under = camera.position.y < WATER + 0.9;
+  if (under) {
+    scene.background = UNDERWATER;
+    scene.fog.color.copy(UNDERWATER).multiplyScalar(0.25 + 0.75 * dayAmt);
+    scene.fog.near = 1; scene.fog.far = 22;
+  } else {
+    scene.background = skyTarget.texture;
+    scene.fog.color.copy(fogColor);
+    scene.fog.near = 45; scene.fog.far = 130;
+  }
+  cloudMat.emissive.copy(fogColor).multiplyScalar(0.35);
+  cloudMat.color.setRGB(1, 1, 1).multiplyScalar(0.4 + 0.6 * dayAmt);
+
+  // sun disc: dimmer and redder near the horizon
+  const vis = smoothstep(-0.05, 0.01, sunY);
+  sunDisc.position.copy(camera.position).addScaledVector(sunDir, 400);
+  sunDisc.lookAt(camera.position);
+  sunDisc.material.uniforms.color.value.copy(sunColor).multiplyScalar(vis * (0.3 + 0.7 * Math.sqrt(tMax)));
+  sunDisc.visible = vis > 0;
+  moonDisc.position.copy(camera.position).addScaledVector(moonDir, 400);
+  moonDisc.lookAt(camera.position);
+  moonDisc.material.uniforms.alpha.value = smoothstep(-0.05, 0.08, moonDir.y) * (1 - 0.8 * dayAmt);
+  const starAlpha = smoothstep(-0.02, -0.25, sunY);
+  stars.material.uniforms.alpha.value = starAlpha;
+  stars.material.uniforms.time.value = time;
+  stars.visible = starAlpha > 0.005;
+  stars.position.copy(camera.position);
+  stars.quaternion.setFromAxisAngle(skyAxis, a);
+
+  // water reflects the sun (or the moon at night)
+  water.position.x = seaFloor.position.x = camera.position.x;
+  water.position.z = seaFloor.position.z = camera.position.z;
+  const wu = waterMat.uniforms;
+  wu.time.value = time;
+  if (sunY > -0.04) { wu.sunDir.value.copy(sunDir); wu.sunColor.value.copy(sunColor).multiplyScalar(sunUp * Math.sqrt(tMax)); }
+  else { wu.sunDir.value.copy(moonDir); wu.sunColor.value.copy(MOONLIGHT).multiplyScalar(0.35 * moonUp); }
+  wu.ambient.value.copy(hemi.color).multiplyScalar(hemi.intensity * 0.6);
+
+  // god rays: strongest when looking toward a low sun
+  const facing = look.dot(sunDir);
+  let rays = 0;
+  if (!under && facing > 0.05 && sunY > -0.03) {
+    tmp.copy(camera.position).addScaledVector(sunDir, 400).project(camera);
+    godRays.uniforms.sunPos.value.set(tmp.x * 0.5 + 0.5, tmp.y * 0.5 + 0.5);
+    rays = 0.55 * smoothstep(0.05, 0.6, facing) * sunUp * (0.5 + 0.8 * (1 - smoothstep(0.05, 0.6, sunY)));
+  }
+  godRays.uniforms.intensity.value = rays;
+  godRays.uniforms.color.value.copy(sunColor);
+  godRays.uniforms.aspect.value = camera.aspect;
+}
+
+const PHASES = [[4.8, 'Night'], [5.8, 'Dawn'], [7.2, 'Sunrise'], [11, 'Morning'], [14, 'Midday'], [17, 'Afternoon'], [18.6, 'Sunset'], [19.5, 'Dusk'], [24, 'Night']];
+function clockText() {
+  const h = Math.floor(hour), m = Math.floor((hour - h) * 60);
+  const phase = PHASES.find(p => hour < p[0])[1];
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')} · ${phase}` + (isLocked() && keys.KeyT ? ' ⏩' : '');
+}
+
+// ---------------------------------------------------------------- post-processing: god rays + bloom
+const GodRaysShader = {
+  uniforms: {
+    tDiffuse: { value: null }, tMask: { value: null }, sunPos: { value: new THREE.Vector2(0.5, 0.5) },
+    color: { value: new THREE.Color() }, intensity: { value: 0 }, aspect: { value: 1 },
+  },
+  vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `
+    uniform sampler2D tDiffuse; uniform sampler2D tMask;
+    uniform vec2 sunPos; uniform vec3 color; uniform float intensity; uniform float aspect;
+    varying vec2 vUv;
+    #define SAMPLES 64
+    void main() {
+      vec4 base = texture2D(tDiffuse, vUv);
+      if (intensity <= 0.0) { gl_FragColor = base; return; }
+      // march toward the sun, adding up open sky that sits near the sun (screen-space light shafts)
+      vec2 delta = (vUv - sunPos) / float(SAMPLES) * 0.97;
+      float jitter = fract(sin(dot(vUv, vec2(12.9898, 78.233))) * 43758.5453);
+      vec2 tc = vUv - delta * jitter;
+      float illum = 1.0, acc = 0.0;
+      for (int i = 0; i < SAMPLES; i++) {
+        tc -= delta;
+        vec2 d = (tc - sunPos) * vec2(aspect, 1.0);
+        acc += texture2D(tMask, clamp(tc, 0.001, 0.999)).r * exp(-dot(d, d) * 14.0) * illum;
+        illum *= 0.968;
+      }
+      acc /= float(SAMPLES);
+      gl_FragColor = vec4(base.rgb + color * acc * intensity, base.a);
+    }`,
+};
+const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(innerWidth, innerHeight, { type: THREE.HalfFloatType, samples: 4 }));
+composer.addPass(new RenderPass(scene, camera));
+const godRays = new ShaderPass(GodRaysShader);
+composer.addPass(godRays);
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.35, 0.4, 1.05); // only HDR highlights bloom
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+// low-res mask of where open sky is visible (everything else black), used by the god rays
+const maskTarget = new THREE.WebGLRenderTarget(1, 1);
+godRays.uniforms.tMask.value = maskTarget.texture;
+const maskMat = new THREE.MeshBasicMaterial({ color: 0x000000, fog: false });
+const prevClear = new THREE.Color();
+function renderRayMask() {
+  const bg = scene.background, starsVis = stars.visible, sunVis = sunDisc.visible;
+  scene.background = null;
+  scene.overrideMaterial = maskMat;
+  sunDisc.visible = moonDisc.visible = stars.visible = highlight.visible = false;
+  renderer.getClearColor(prevClear);
+  const prevAlpha = renderer.getClearAlpha();
+  renderer.setClearColor(0xffffff, 1);
+  renderer.setRenderTarget(maskTarget);
+  renderer.clear();
+  renderer.render(scene, camera);
+  renderer.setRenderTarget(null);
+  renderer.setClearColor(prevClear, prevAlpha);
+  scene.overrideMaterial = null;
+  scene.background = bg;
+  stars.visible = starsVis; sunDisc.visible = sunVis; moonDisc.visible = true; highlight.visible = !!target;
+}
+
+function resize() {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  const pr = renderer.getPixelRatio();
+  composer.setPixelRatio(pr);
+  composer.setSize(innerWidth, innerHeight);
+  maskTarget.setSize(Math.ceil(innerWidth * pr / 4), Math.ceil(innerHeight * pr / 4));
+  stars.material.uniforms.pr.value = pr;
+}
+addEventListener('resize', resize);
+resize();
+
+function update(dt) {
+  time += dt;
+  updatePlayer(dt);
+  for (const m of mobs) {
+    // animals far from the player wait (hidden) until the player comes back
+    const active = Math.hypot(m.pos.x - player.pos.x, m.pos.z - player.pos.z) < MOB_ACTIVE_DIST;
+    m.model.root.visible = active;
+    if (active) updateMob(m, dt);
+  }
+  for (const d of dragons) {
+    const active = Math.hypot(d.pos.x - player.pos.x, d.pos.z - player.pos.z) < MOB_ACTIVE_DIST;
+    d.model.root.visible = active;
+    if (active) updateDragon(d, dt);
+  }
+  updatePlayerModel(dt);
+  updateParticles(dt);
+  for (const c of clouds.children) {
+    c.position.x += dt * 1.5;
+    const dx = c.position.x - player.pos.x, dz = c.position.z - player.pos.z;
+    if (Math.abs(dx) > CLOUD_SPAN / 2) c.position.x -= Math.sign(dx) * CLOUD_SPAN;
+    if (Math.abs(dz) > CLOUD_SPAN / 2) c.position.z -= Math.sign(dz) * CLOUD_SPAN;
+  }
+  updateChunks(CHUNK_BUDGET_MS);
+  updateCamera();
+  updateSky(dt);
+  updateHud();
+  setText(clockEl, clockText());
+}
+
+let last = performance.now();
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  update(dt);
+  if (godRays.uniforms.intensity.value > 0) renderRayMask();
+  renderer.shadowMap.needsUpdate = true;
+  composer.render();
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
