@@ -3,6 +3,7 @@ import { renderer } from './render.js';
 import { updateChunks } from './meshing.js';
 import { updateClouds } from './environment.js';
 import { updateParticles } from './particles.js';
+import { updateFire } from './fire.js';
 import { player, updatePlayerModel } from './player.js';
 import { mobs, updateMob } from './horse.js';
 import { dragons, updateDragon } from './dragon.js';
@@ -40,6 +41,7 @@ function update(dt) {
     if (active) updateDragon(d, dt);
   }
   updatePlayerModel(dt);
+  updateFire(dt);
   updateParticles(dt);
   updateClouds(dt, player.pos);
   updateChunks(CHUNK_BUDGET_MS, player.pos);

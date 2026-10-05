@@ -7,6 +7,7 @@ import { scene } from './render.js';
 import { Entity, physics, accelerate } from './physics.js';
 import { box, pivot, fixed, shade, bake, nameTag, barrelRoll, LEATHER, GOLD } from './modelkit.js';
 import { spawnParticle } from './particles.js';
+import { scorch, FIRE_COLORS } from './fire.js';
 import { player } from './player.js';
 import { state } from './state.js';
 
@@ -400,14 +401,19 @@ function animateDragon(d, dt) {
 }
 
 // A roaring stream of flame from the open jaws, along the way the head points, with a little
-// smoke. Flames rise as they go, and are thrown along at the dragon's own speed too.
-const FIRE_RATE = 90; // particles a second
-const FIRE_COLORS = [0xfff3a0, 0xffd23a, 0xffb02a, 0xff8a2a, 0xff5a1a, 0xe8341a];
-const fireFrom = new THREE.Vector3(), fireDir = new THREE.Vector3();
+// smoke. Flames rise as they go, and are thrown along at the dragon's own speed too. Wood and
+// leaves the flames reach catch fire.
+const FIRE_RATE = 90;  // particles a second
+const FIRE_RANGE = 7;  // how far the flames reach, in blocks
+const fireFrom = new THREE.Vector3(), fireDir = new THREE.Vector3(), scorchDir = new THREE.Vector3();
 function breatheFire(d, dt) {
   const head = d.model.head;
   head.localToWorld(fireFrom.set(0, -0.08, -1.1));
   head.localToWorld(fireDir.set(0, -0.08, -2.1)).sub(fireFrom).normalize();
+  for (let i = 0; i < 2; i++) { // a couple of rays a frame, spread like the flames
+    scorchDir.set(fireDir.x + rnd(-0.09, 0.09), fireDir.y + rnd(-0.09, 0.09), fireDir.z + rnd(-0.09, 0.09)).normalize();
+    scorch(fireFrom, scorchDir, FIRE_RANGE);
+  }
   for (d.fireAcc += dt * FIRE_RATE; d.fireAcc >= 1; d.fireAcc--) {
     const sp = rnd(11, 15), smoke = Math.random() < 0.12;
     spawnParticle(fireFrom,

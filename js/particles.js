@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 import { scene } from './render.js';
 
-// A fixed pool of little cubes for sparkles, smoke and block debris, drawn as one instanced mesh
-// (a single draw call). Dead particles are scaled to zero.
-const COUNT = 260;
+// A fixed pool of little cubes for sparkles, smoke, flames and block debris, drawn as one instanced
+// mesh (a single draw call). Dead particles are scaled to zero. Burning trees need a lot of them.
+const COUNT = 700;
 const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.1, 0.1, 0.1), new THREE.MeshBasicMaterial({ color: 0xffffff }), COUNT);
 mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
 mesh.frustumCulled = false; // particles fly all over; the mesh's own bounds never cover them
