@@ -18,11 +18,14 @@ import { state } from './state.js';
 // → two-segment legs, neck → head, jointed tail. Leg order is FL, FR, HL, HR.
 const HIP_Y = 0.8, HIP_Z = 0.55, SEAT_REST_Y = HIP_Y + 0.68;
 const STEEL = 0xb8bcc4, SOCK = 0xf4f1ea;
+// the unicorn's long pastel mane, crest to withers (the tail and forelock use it too), and its tack
+const UNICORN_MANE = [0xb8f2dc, 0xa8e4ff, 0xb0c4ff, 0xcdb4ff, 0xe6b3ff, 0xffb8dc, 0xffc8d2];
+const UNICORN_STRAP = 0x8f5fd6, UNICORN_SADDLE = 0xc39bff, PEARL = 0xfff8f0;
 function makeHorseModel(c, unicorn) {
   const root = new THREE.Group();
   const body = pivot(0, HIP_Y, HIP_Z, root);
-  const hoof = unicorn ? 0xd9b3ff : 0x3a2a1e;
-  const saddle = unicorn ? 0xff6fb5 : 0x6b3a1e, strap = unicorn ? 0xff9ad5 : LEATHER;
+  const hoof = unicorn ? GOLD : 0x3a2a1e;
+  const saddle = unicorn ? UNICORN_SADDLE : 0x6b3a1e, strap = unicorn ? UNICORN_STRAP : LEATHER;
   const metal = unicorn ? GOLD : STEEL, trim = unicorn ? GOLD : 0xf0e6d0;
   const legs = [];
   [[-0.2, -1.05, false], [0.2, -1.05, false], [-0.2, 0, true], [0.2, 0, true]].forEach(([x, z, hind], i) => {
@@ -40,7 +43,7 @@ function makeHorseModel(c, unicorn) {
       box(0.2, 0.08, 0.2, 0xf3e8ff, 0, -0.24, 0.01, knee);
       box(0.12, 0.08, 0.06, 0xe0ccff, 0, -0.27, 0.1, knee);
     }
-    box(0.19, 0.03, 0.19, unicorn ? GOLD : shade(hoof, 1.25), 0, -0.295, 0, knee); // coronet
+    box(0.19, 0.03, 0.19, unicorn ? 0xfff4c2 : shade(hoof, 1.25), 0, -0.295, 0, knee); // coronet
     box(0.18, 0.14, 0.18, hoof, 0, -0.35, 0, knee);
     box(0.185, 0.025, 0.185, shade(hoof, 0.7), 0, -0.405, 0, knee);
     legs.push({ hip, knee, hind });
@@ -62,6 +65,20 @@ function makeHorseModel(c, unicorn) {
       const y = 0.05 + hash2(i, s) * 0.5, z = -1.2 + hash2(s, i + 50) * 1.3;
       if (y > 0.3 && z > -0.86 && z < -0.14) continue; // under the saddle cloth
       box(0.012, 0.07, 0.08, shade(c.body, 1.25), s * 0.302, y, z, body);
+    }
+  }
+
+  if (unicorn) {
+    // a golden sun on each hip: a disc with a pale centre and eight rays, long and short in turn
+    for (const s of [-1, 1]) {
+      const x = s * 0.304, y = 0.3, z = -0.02;
+      box(0.01, 0.11, 0.11, GOLD, x, y, z, body);
+      box(0.014, 0.06, 0.06, 0xfff1a8, x + s * 0.002, y, z, body);
+      for (let k = 0; k < 8; k++) {
+        const a = k * Math.PI / 4, long = k % 2 === 0, r = long ? 0.105 : 0.09;
+        box(0.01, 0.035, 0.035, GOLD, x, y + Math.cos(a) * r, z + Math.sin(a) * r, body);
+        if (long) box(0.01, 0.025, 0.025, shade(GOLD, 0.85), x, y + Math.cos(a) * 0.14, z + Math.sin(a) * 0.14, body);
+      }
     }
   }
 
@@ -88,11 +105,15 @@ function makeHorseModel(c, unicorn) {
   box(0.3, 0.8, 0.42, c.body, 0, 0.35, -0.05, neck);
   box(0.34, 0.3, 0.46, c.body, 0, 0.05, -0.04, neck); // thicker where it meets the shoulders
   if (unicorn) {
-    RAINBOW_HEX.forEach((col, i) => {
-      const y = 0.72 - i * 0.14;
-      box(0.13, 0.16, 0.14, col, 0, y, 0.2, neck);
-      box(0.08, 0.08, 0.08, shade(col, 1.45), 0, y + 0.04, 0.29, neck);  // pastel tuft
-      box(0.04, 0.24, 0.1, shade(col, 1.2), 0.165, y - 0.07, 0.13, neck); // strands falling to one side
+    // a long flowing mane: a thick crest, wide locks lying over the right side of the neck, loose
+    // strands hanging below them, and a little on the left
+    UNICORN_MANE.forEach((col, i) => {
+      const y = 0.76 - i * 0.12, k = i % 3;
+      box(0.15, 0.15, 0.13, col, 0, y, 0.21, neck);
+      box(0.09, 0.08, 0.08, shade(col, 1.1), 0, y + 0.04, 0.3, neck);
+      box(0.045, 0.17, 0.28 + 0.02 * k, col, 0.168, y - 0.05, 0.07, neck);
+      box(0.035, 0.24, 0.07, shade(col, 0.9), 0.19, y - 0.16, 0.16 - k * 0.07, neck);
+      box(0.03, 0.12, 0.1, shade(col, 1.06), -0.162, y - 0.02, 0.16, neck);
     });
   } else {
     // a crest of alternating tufts, with longer locks falling down one side of the neck
@@ -146,19 +167,21 @@ function makeHorseModel(c, unicorn) {
   }
   let horn = null;
   if (unicorn) {
-    horn = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.45, 8), new THREE.MeshLambertMaterial({ color: 0xffd86b, emissive: 0x664400 }));
-    horn.position.set(0, 0.33, -0.18);
+    // a long pearly horn with a gold groove spiralling up it and a gold band at its base
+    const L = 0.62, R = 0.065;
+    horn = new THREE.Mesh(new THREE.ConeGeometry(R, L, 8), new THREE.MeshLambertMaterial({ color: PEARL, emissive: 0x3a3226 }));
+    horn.position.set(0, 0.41, -0.2);
     horn.rotation.x = -0.3;
     horn.castShadow = true;
     head.add(horn);
-    // a groove spiralling up the horn, and a gold band at its base
-    for (let k = 0; k < 16; k++) {
-      const t = k / 16, y = -0.2 + t * 0.36, r = 0.06 * (0.225 - y) / 0.45, a = t * Math.PI * 6, sz = 0.028 - t * 0.014;
-      box(sz, 0.022, sz, 0xfff4c2, Math.cos(a) * r, y, Math.sin(a) * r, horn);
+    for (let k = 0; k < 22; k++) {
+      const t = k / 22, y = -L * 0.44 + t * L * 0.8, r = R * (L / 2 - y) / L, a = t * Math.PI * 7, sz = 0.03 - t * 0.016;
+      box(sz, 0.022, sz, GOLD, Math.cos(a) * r, y, Math.sin(a) * r, horn);
     }
-    box(0.13, 0.03, 0.13, GOLD, 0, -0.21, 0, horn);
-    box(0.16, 0.08, 0.12, 0xff9ad5, 0, 0.17, -0.02, head);
-    for (const s of [-1, 1]) box(0.05, 0.03, 0.18, s < 0 ? 0xffb3c6 : 0xbdb2ff, s * 0.085, 0.16, -0.16, head);
+    box(0.14, 0.035, 0.14, GOLD, 0, -L / 2 + 0.01, 0, horn);
+    // forelock: a tuft between the ears and locks falling either side of the horn
+    box(0.16, 0.08, 0.12, UNICORN_MANE[5], 0, 0.17, -0.02, head);
+    for (const s of [-1, 1]) box(0.05, 0.03, 0.18, s < 0 ? UNICORN_MANE[4] : UNICORN_MANE[1], s * 0.085, 0.16, -0.16, head);
   } else {
     // forelock
     box(0.12, 0.08, 0.06, c.mane, 0, 0.19, 0.03, head);
@@ -174,7 +197,7 @@ function makeHorseModel(c, unicorn) {
   let parent = tail;
   for (let i = 0; i < segCount; i++) {
     const seg = pivot(0, i ? -segLen : 0, 0, parent);
-    const w = unicorn ? 0.15 : 0.14 - i * 0.012, col = unicorn ? RAINBOW_HEX[i] : c.mane;
+    const w = unicorn ? 0.15 : 0.14 - i * 0.012, col = unicorn ? UNICORN_MANE[i + 1] : c.mane;
     box(w, segLen + 0.03, w, col, 0, -segLen / 2, 0, seg);
     // loose strands around the core give the tail some volume
     box(w * 0.45, segLen + 0.06, w * 0.45, shade(col, 0.78), w * 0.38, -segLen / 2 - 0.02, w * 0.3, seg);
@@ -223,6 +246,7 @@ function covertRow(s, x0, x1, n, y, z, d, colA, colB, parent) {
 function makeWing(s, parent) {
   const shoulder = pivot(s * 0.33, 0.55, -1.08, parent);
   shoulder.rotation.order = 'YXZ';
+  shoulder.scale.setScalar(1.35); // the feathers below are laid out at normal size; the wing is drawn a third bigger
   // arm: leading edge, lesser and greater coverts (plus a row underneath), six secondaries
   box(0.5, 0.075, 0.09, WING_WHITE, s * 0.25, 0.012, 0, shoulder);
   covertRow(s, 0, 0.5, 5, 0.018, 0.09, 0.1, WING_WHITE, WING_SOFT, shoulder);
