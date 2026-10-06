@@ -1,13 +1,11 @@
 import * as THREE from 'three';
 import { mulberry32 } from './util.js';
+import { B } from './blocktypes.js';
 
-// Block types, their colours and the texture atlas they are drawn from.
-export const B = { AIR: 0, GRASS: 1, DIRT: 2, STONE: 3, SAND: 4, LOG: 5, PLANKS: 6, LEAVES: 7, BRICK: 8, RAINBOW: 9, BEDROCK: 10 };
+// Block types (in blocktypes.js), their names and colours, and the texture atlas they are drawn from.
+export { B, FLAMMABLE, HOTBAR } from './blocktypes.js';
 export const BLOCK_NAMES = { 1: 'Grass', 2: 'Dirt', 3: 'Stone', 4: 'Sand', 5: 'Wood', 6: 'Planks', 7: 'Leaves', 8: 'Brick', 9: 'Rainbow' };
 export const BLOCK_COLORS = { 1: 0x5f9f35, 2: 0x86604a, 3: 0x808080, 4: 0xdcd0a0, 5: 0x69523a, 6: 0xaa8852, 7: 0x377d28, 8: 0x9b4837, 9: 0xff80c0, 10: 0x333333 };
-// blocks that catch fire (see fire.js), and how many seconds each burns before it is gone
-export const FLAMMABLE = { [B.LOG]: 7, [B.PLANKS]: 6, [B.LEAVES]: 2.5 };
-export const HOTBAR = [B.GRASS, B.DIRT, B.STONE, B.SAND, B.LOG, B.PLANKS, B.LEAVES, B.BRICK, B.RAINBOW];
 export const RAINBOW_RGB = [[255, 80, 80], [255, 160, 60], [255, 230, 80], [100, 220, 100], [90, 160, 255], [180, 110, 255]];
 export const RAINBOW_HEX = [0xff5050, 0xffa03c, 0xffe650, 0x64dc64, 0x5aa0ff, 0xb46eff];
 

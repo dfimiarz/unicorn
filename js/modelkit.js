@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { smoothstep } from './util.js';
+import { ROLL_TIME } from './rules.js';
 
 // Building blocks for the box models (player, horses, dragons), and floating name tags.
 
@@ -86,7 +87,6 @@ export function bake(joint) {
 // pivot, easing in and out. Started by setting m.roll = { t: 0, dir } (dir 1 rolls left, -1 right);
 // call after the body's pose is set each frame. m.barrel is the roll angle (0 when not rolling) and
 // m.rollAxisH how high the axis is above m.pos.
-export const ROLL_TIME = 0.9;
 const rollOff = new THREE.Vector3(), rollTilt = new THREE.Euler();
 export function barrelRoll(m, dt, body, axisY) {
   m.barrel = 0;

@@ -8,8 +8,8 @@ export const session = {
   online: false, // connected to the server
   id: 0, name: '', host: 0,
   seed: null,    // the world everyone plays in; null until the first player has picked it
-  hour: null, ffwd: false, lan: [], edits: [], burns: [], riders: [], players: [], // what the server sent on joining
-  // the host's computer runs the animals nobody is riding, and the fires; single player is its own host
+  hour: null, ffwd: false, lan: [], edits: [], burns: [], hp: [], riders: [], players: [], // what the server sent on joining
+  // the host's computer runs the animals nobody is riding; single player is its own host
   get isHost() { return !this.online || this.host === this.id; },
 };
 

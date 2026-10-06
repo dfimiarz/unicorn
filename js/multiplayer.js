@@ -22,7 +22,9 @@ import { state } from './state.js';
 //
 // Every animal is run (its wandering about, its physics) by exactly one computer: its rider's, or
 // the host's if nobody is riding it. That computer sends where it is and what it's doing; everywhere
-// else the animal glides to match and only animates itself. Fires are the host's job too (fire.js).
+// else the animal glides to match and only animates itself. What happens in the game is up to the
+// server, by the rules in rules.js: which blocks catch fire, spread it and burn away (fire.js), and
+// which dragons lose or heal hearts, which it tells everyone here.
 
 const SEND_RATE = 12; // updates a second
 const SHIRTS = [0xd94848, 0xe8a23a, 0x58b84a, 0x4a7ad9, 0x9b59d0, 0xe063a8, 0x3fb5b0, 0x8a6a4a];
@@ -89,8 +91,10 @@ function encode(a) {
   if (a.inWater) e.w = 1;
   if (a.roll) e.r = [r3(a.roll.t), a.roll.dir];
   if (a.kind === 'dragon') {
-    e.f = r3(a.fvy); e.hp = a.health; if (a.breathing) e.b = 1; if (a.rider) e.a = [r3(a.aimYaw), r3(a.aimPitch)];
-    e.c = [r3(Math.max(0, a.hurtCd)), r3(a.healT), r3(a.rollCd), r3(a.dizzy)]; // so whoever runs it next carries on the same
+    e.f = r3(a.fvy); e.k = a.breath[0]; if (a.rider) e.a = [r3(a.aimYaw), r3(a.aimPitch)];
+    if (a.breathing) e.b = 1;
+    if (a.breathOn) e.ff = [r3(a.fireFrom.x), r3(a.fireFrom.y), r3(a.fireFrom.z)]; // where its breath comes from, for the server
+    e.c = [r3(a.rollCd), r3(a.dizzy)]; // so whoever runs it next shows the same roll cooldown
   }
   else if (a.glide) e.gl = 1;
   return e;
@@ -113,8 +117,8 @@ function follow(a, dt, now) {
   }
   if (n.r && !a.roll) a.roll = { t: n.r[0], dir: n.r[1] };
   if (a.kind === 'dragon') {
-    a.fvy = n.f; a.breathing = !!n.b; a.health = n.hp ?? a.health; if (n.a) [a.aimYaw, a.aimPitch] = n.a;
-    if (n.c) [a.hurtCd, a.healT, a.rollCd, a.dizzy] = n.c;
+    a.fvy = n.f; a.breathing = !!n.b; if (n.a) [a.aimYaw, a.aimPitch] = n.a;
+    if (n.c) [a.rollCd, a.dizzy] = n.c;
     a.rollCounted = !!a.roll; // a roll under way was already counted where it started
   }
   else a.glide = !!n.gl;
@@ -135,6 +139,9 @@ on('a', ({ list }) => {
   }
 });
 on('rider', m => riderIs(m.id, m.rider));
+// a dragon hurt or healed, as the server decides (out of hearts, its rider is thrown off: see controls.js)
+function setHealth(id, hp) { const a = animals.get(id); if (a?.kind === 'dragon') a.health = hp; }
+on('hp', m => setHealth(m.id, m.hp));
 on('edit', m => setBlock(m.x, m.y, m.z, m.b));
 on('time', m => setClock(m.hour));
 on('host', showStatus);
@@ -153,6 +160,7 @@ if (session.online) {
   }
   for (const [id, rider] of session.riders) riderIs(id, rider);
   for (const [k, t] of session.burns) { const [x, y, z] = k.split(',').map(Number); light(x, y, z, t); }
+  for (const [id, hp] of session.hp) setHealth(id, hp);
   setClock(session.hour);
 }
 

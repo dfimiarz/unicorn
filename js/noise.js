@@ -1,4 +1,4 @@
-// Seeded hashes and value noise for the terrain. The seed is picked in world.js (see pickSeed).
+// Seeded hashes and value noise for the terrain. The seed is picked in terrain.js (see pickSeed).
 export let seed = 0;
 export const setSeed = s => { seed = s; };
 export function hash2(x, z) {

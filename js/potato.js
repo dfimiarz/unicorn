@@ -4,6 +4,7 @@ import { box, pivot, fixed, shade, bake, barrelRoll, LEATHER, GOLD } from './mod
 import { scene } from './render.js';
 import { blowBubble } from './bubbles.js';
 import { makeDragon } from './dragon.js';
+import { breathDir, DRAGON_SIZE } from './rules.js';
 import { state } from './state.js';
 
 // Bubbles, the potato dragon: a round, pale purple potato of a body with a little face set into
@@ -285,16 +286,17 @@ function animatePotato(d, dt) {
   md.root.updateMatrixWorld(true);
   md.seat.getWorldPosition(d.seatWorld);
   md.head.localToWorld(d.fireFrom.set(0, -0.24, -0.56)); // its mouth, kept up to date for aiming too
-  if (d.fireW > 0.6) blowBubbles(d, dt);
+  d.breathOn = d.fireW > 0.6;
+  if (d.breathOn) blowBubbles(d, dt);
   else d.fireAcc = 0;
 }
 
 // A stream of bubbles from the open mouth, where its rider aims, carried along at its own speed too
-const BUBBLE_RATE = 16, BUBBLE_RANGE = 8; // bubbles a second; about how far they float, in blocks
+const BUBBLE_RATE = 16; // bubbles a second; they float about as far as BREATH_RANGE.bubbles (rules.js)
 const bubbleAt = new THREE.Vector3(), bubbleVel = new THREE.Vector3();
 function blowBubbles(d, dt) {
-  const { fireFrom, fireDir } = d, a = d.yaw + d.aimYaw, cp = Math.cos(d.aimPitch);
-  fireDir.set(-Math.sin(a) * cp, Math.sin(d.aimPitch), -Math.cos(a) * cp);
+  const { fireFrom, fireDir } = d;
+  breathDir(d.yaw, d.aimYaw, d.aimPitch, fireDir);
   for (d.fireAcc += dt * BUBBLE_RATE; d.fireAcc >= 1; d.fireAcc--) {
     const sp = rnd(8, 11);
     bubbleVel.set(fireDir.x * sp + rnd(-1, 1), fireDir.y * sp + rnd(-0.6, 1), fireDir.z * sp + rnd(-1, 1)).add(d.vel);
@@ -304,8 +306,8 @@ function blowBubbles(d, dt) {
 
 export function makePotatoDragon(c, p) {
   const d = makeDragon(c, p, {
-    makeModel: makePotatoModel, animate: animatePotato, hw: 0.85, h: 1.9, riddenH: 3.5, seatRestY: BODY_Y + SEAT_Y,
-    tagY: 2.7, walkSpeed: 2.6, flySpeed: 10, hops: true, breathRange: BUBBLE_RANGE, weapon: 'blow bubbles', voice: 1.6,
+    makeModel: makePotatoModel, animate: animatePotato, ...DRAGON_SIZE.bubbles, seatRestY: BODY_Y + SEAT_Y,
+    tagY: 2.7, walkSpeed: 2.6, flySpeed: 10, hops: true, breath: 'bubbles', weapon: 'blow bubbles', voice: 1.6,
   });
   Object.assign(d, { hopW: 0, wasGround: true, sniffled: false, straddle: 0.95 });
   return d;
