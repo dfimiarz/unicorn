@@ -1,8 +1,9 @@
 import { CHUNK_BUDGET_MS, MOB_ACTIVE_DIST } from './config.js';
-import { renderer } from './render.js';
+import { renderer, camera } from './render.js';
 import { updateChunks } from './meshing.js';
 import { updateClouds } from './environment.js';
 import { updateParticles } from './particles.js';
+import { updateBubbles } from './bubbles.js';
 import { updateFire } from './fire.js';
 import { player, updatePlayerModel } from './player.js';
 import { mobs, updateMob } from './horse.js';
@@ -46,6 +47,7 @@ function update(dt) {
   poseOthers(dt);
   updateFire(dt);
   updateParticles(dt);
+  updateBubbles(dt, camera);
   updateClouds(dt, player.pos);
   updateChunks(CHUNK_BUDGET_MS, player.pos);
   updateCamera();

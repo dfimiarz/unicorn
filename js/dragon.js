@@ -8,19 +8,22 @@ import { Entity, physics, accelerate } from './physics.js';
 import { box, pivot, fixed, shade, bake, nameTag, barrelRoll, LEATHER, GOLD } from './modelkit.js';
 import { spawnParticle } from './particles.js';
 import { scorch, fireIn, FIRE_COLORS } from './fire.js';
+import { popBubblesNear } from './bubbles.js';
 import { player } from './player.js';
 import { raycast } from './camera.js';
 import { state } from './state.js';
 
 const tmp = new THREE.Vector3();
 
-// The screech a dragon lets out as it starts a barrel roll or is hurt, quieter the further off it is
+// The screech a dragon lets out as it starts a barrel roll or is hurt, quieter the further off it is,
+// and higher pitched from a smaller dragon (d.voice)
 const SCREECH = new Audio('screech.m4a'), SCREECH_RANGE = 80;
 function screech(d) {
   const vol = 1 - d.pos.distanceTo(player.pos) / SCREECH_RANGE;
   if (vol <= 0) return;
   const s = SCREECH.cloneNode(); // a fresh copy so screeches from several dragons can overlap
   s.volume = Math.min(1, vol);
+  s.playbackRate = d.voice; s.preservesPitch = false;
   s.play().catch(() => {}); // the browser may refuse before the page has been clicked
 }
 
@@ -381,12 +384,6 @@ function animateDragon(d, dt) {
   // apply
   md.body.position.set(0, DRAGON_HIP_Y + bob + Math.sin(state.time * 1.6 + d.breath) * 0.012, 0);
   md.body.rotation.set(pitch, sway, roll);
-  if (d.roll && !d.screeched) screech(d);
-  d.screeched = !!d.roll;
-  // and as it's hurt, unless it's mid-roll and already screeching (wherever it runs: elsewhere its
-  // health comes in with its updates)
-  if (d.health < d.heardHealth && !d.roll) screech(d);
-  d.heardHealth = d.health;
   barrelRoll(d, dt, md.body, 0.12); // about the middle of the torso
   let neckPitch = 0;
   md.neckSegs.forEach((s, i) => {
@@ -472,11 +469,11 @@ export function aimDragon(d, eye, dir, dt) {
   // breathing, it swings round to face its target: quickly if that's past where its neck reaches
   if (d.breathing) d.yaw += (yaw - d.aimYaw) * Math.min(1, dt * 5) + d.aimYaw * Math.min(1, dt * 2);
   // close enough for the flames to reach it (shown by the crosshair, see hud.js)
-  d.aimInRange = onSomething && tmp.length() < FIRE_RANGE + 1 && pitch === d.aimPitch;
+  d.aimInRange = onSomething && tmp.length() < d.breathRange + 1 && pitch === d.aimPitch;
 }
 
 // Health: fire costs a dragon a heart, at most one every HURT_COOLDOWN seconds, whether it's another
-// dragon's breath or burning blocks it flies or walks through. Out of hearts, it throws its rider
+// dragon's breath or burning blocks it flies or walks through; so do another dragon's bubbles. Out of hearts, it throws its rider
 // off (see controls.js) and can't be ridden until it has healed a heart. Left alone it heals.
 // A dragon in a barrel roll spins clear of the flames and isn't hurt. Playing together, the
 // computer running the dragon decides, and sends its health with the rest.
@@ -494,9 +491,9 @@ function inFire(d) {
   const x = d.pos.x, z = d.pos.z;
   return fireIn(Math.floor(x - 1.5), Math.floor(d.pos.y - 0.5), Math.floor(z - 1.5), Math.floor(x + 1.5), Math.floor(d.pos.y + d.h), Math.floor(z + 1.5));
 }
-function hurtByFire(d, dt) {
+function hurt(d, dt, bubbled) {
   d.hurtCd -= dt;
-  if (d.hurtCd <= 0 && d.health > 0 && !d.roll && inFire(d)) {
+  if (d.hurtCd <= 0 && d.health > 0 && !d.roll && (bubbled || inFire(d))) {
     d.health--;
     d.hurtCd = HURT_COOLDOWN; d.healT = HEAL_DELAY;
   } else if (d.health < DRAGON_HEARTS && (d.healT -= dt) <= 0) {
@@ -513,6 +510,16 @@ function rollCooldown(d, dt) {
   d.rollCounted = !!d.roll;
   if (!d.roll) d.rollCd = Math.max(0, d.rollCd - dt);
   d.dizzy = Math.max(0, d.dizzy - dt / DIZZY_TIME);
+}
+
+// Bubbles' legs are too short to walk on (see potato.js), so it gets about in hops: it sits a moment
+// each time it lands, then springs off the way it's going and sails along through the air.
+const HOP_UP = 6.5, HOP_REST = 0.12;
+function hop(d, tx, tz, dt) {
+  if (!d.onGround) { d.hopCd = HOP_REST; return accelerate(d, tx, tz, dt, 1.5); }
+  d.hopCd -= dt;
+  if ((tx || tz) && d.hopCd <= 0) d.vel.set(tx, d.hitWall ? 9 : HOP_UP, tz); // a big hop up onto a block
+  else accelerate(d, 0, 0, dt);
 }
 
 const DRAGON_HOME_RADIUS = 55; // flying dragons turn back toward the island past this
@@ -576,26 +583,36 @@ export function updateDragon(d, dt) {
       if (d.hitWall && d.onGround) d.vel.y = 9;
     }
     d.stuckT = d.state === 'walk' && d.hitWall ? d.stuckT + dt : 0;
-    accelerate(d, tx, tz, dt, 3);
+    if (d.hops) hop(d, tx, tz, dt);
+    else accelerate(d, tx, tz, dt, 3);
     d.glide = false;
     physics(d, dt);
   }
 
-  if (!d.remote) { rollCooldown(d, dt); hurtByFire(d, dt); }
-  animateDragon(d, dt);
+  // bubbles pop on it wherever it runs, but only the computer running it decides it's hurt
+  tmp.set(d.pos.x, d.pos.y + d.baseH / 2, d.pos.z);
+  const bubbled = popBubblesNear(tmp, d.hw + 0.7, d) > 0;
+  if (!d.remote) { rollCooldown(d, dt); hurt(d, dt, bubbled); }
+  d.animate(d, dt);
+  // it screeches as it starts a barrel roll, and as it's hurt unless it's mid-roll and already
+  // screeching (wherever it runs: elsewhere its health comes in with its updates)
+  if (d.roll && !d.screeched) screech(d);
+  d.screeched = !!d.roll;
+  if (d.health < d.heardHealth && !d.roll) screech(d);
+  d.heardHealth = d.health;
   const tagDist = d.pos.distanceTo(player.pos);
   d.tag.visible = !d.rider && tagDist > 4 && tagDist < 20;
 }
 
 // Riding a dragon: run on the ground, Space to take off and climb, Shift to dive. With neither
 // held it keeps its height, hovering when slow. Coming down onto the ground lands it.
-const DRAGON_RUN_SPEED = 6, DRAGON_FLY_SPEED = 13;
+const DRAGON_RUN_SPEED = 6;
 export function rideDragon(d, dt, mx, mz, back, space, shift) {
   const len = Math.hypot(mx, mz);
   d.glide = false;
   if (d.state === 'fly') {
     if (len > 0) d.yaw = lerpAngle(d.yaw, Math.atan2(-mx, -mz), dt * 4);
-    const sp = DRAGON_FLY_SPEED * (back ? 0.5 : 1);
+    const sp = d.flySpeed * (back ? 0.5 : 1);
     accelerate(d, mx * sp, mz * sp, dt, 2);
     d.fvy += ((space ? 6 : shift ? -9 : 0) - d.fvy) * Math.min(1, dt * 3);
     if (d.pos.y > H + 20) d.fvy = Math.min(d.fvy, 0);
@@ -611,7 +628,8 @@ export function rideDragon(d, dt, mx, mz, back, space, shift) {
   else d.state = len > 0 ? 'walk' : 'idle';
   if (len > 0 && d.state !== 'takeoff') d.yaw = lerpAngle(d.yaw, Math.atan2(-mx, -mz), dt * 6);
   const sp = d.state === 'takeoff' ? 0 : DRAGON_RUN_SPEED * (back ? 0.5 : 1) * (d.inWater ? 0.4 : 1);
-  accelerate(d, mx * sp, mz * sp, dt, 3);
+  if (d.hops && d.state !== 'takeoff') hop(d, mx * sp, mz * sp, dt);
+  else accelerate(d, mx * sp, mz * sp, dt, 3);
   if (d.hitWall && d.onGround && len > 0) d.vel.y = 9; // hop up single blocks
   if (d.inWater && !space) d.vel.y = Math.max(d.vel.y, 1.5);
   physics(d, dt);
@@ -624,11 +642,19 @@ export const DRAGON_COLORS = [
   { name: 'Amethyst', body: 0x6a3aa0, belly: 0xe2c4f0, wing: 0xb47ce0, spike: 0x2e1650, horn: 0xf0e4d0, eye: 0x7affd0 },
 ];
 export const dragons = [];
-export function makeDragon(c, p) {
-  const d = new Entity(0.6, 2.3);
+// The big winged T-rex dragons. Other sorts of dragon (see potato.js) pass `kind` to change any of
+// these: how it's built and animated, its size, speed, weapon and voice, and whether it hops.
+const T_REX = {
+  makeModel: makeDragonModel, animate: animateDragon, hw: 0.6, h: 2.3, riddenH: 3.4, seatRestY: DRAGON_HIP_Y + 0.68,
+  tagY: 3.6, walkSpeed: 1.8, flySpeed: 13, hops: false, breathRange: FIRE_RANGE, weapon: 'breathe fire', voice: 1,
+};
+export function makeDragon(c, p, kind = {}) {
+  const k = { ...T_REX, ...kind };
+  const d = new Entity(k.hw, k.h);
   Object.assign(d, {
-    kind: 'dragon', name: c.name, label: `${c.name} the Dragon`, model: makeDragonModel(c), walkSpeed: 1.8,
-    rider: null, baseH: 2.3, riddenH: 3.4, seatRestY: DRAGON_HIP_Y + 0.68, seatWorld: new THREE.Vector3(),
+    kind: 'dragon', name: c.name, label: c.label || `${c.name} the Dragon`, model: k.makeModel(c), animate: k.animate,
+    walkSpeed: k.walkSpeed, flySpeed: k.flySpeed, hops: k.hops, hopCd: 0, breathRange: k.breathRange, weapon: k.weapon, voice: k.voice,
+    rider: null, baseH: k.h, riddenH: k.riddenH, seatRestY: k.seatRestY, seatWorld: new THREE.Vector3(),
     state: 'idle', stateT: 0, aiTimer: 1 + rand() * 3, turnCd: 0, stuckT: 0, cruise: 12, groundY: p.y,
     phase: 0, flyW: 0, reachW: 0, fvy: 0, landT: 0, turn: 0, idle: null, idleT: 0, idleCd: 2 + Math.random() * 4, lookTo: 0,
     blinkT: Math.random() * 4, breath: Math.random() * 6, glideT: 0, flapping: false,
@@ -640,7 +666,7 @@ export function makeDragon(c, p) {
   d.pos.copy(p);
   d.yaw = d.wanderYaw = d.prevYaw = rand() * Math.PI * 2;
   d.tag = nameTag('🐉 ' + c.name);
-  d.tag.position.set(0, 3.6, 0);
+  d.tag.position.set(0, k.tagY, 0);
   d.model.root.add(d.tag);
   dragons.push(d);
   return d;

@@ -52,7 +52,7 @@ export function posePlayer(pm, m, pos, vel, yaw, pitch, dt) {
     pm.root.rotation.set(body.rotation.x + lean, m.yaw, body.rotation.z);
     tmp.set(0, 0.675, 0).applyEuler(pm.root.rotation);
     pm.root.position.copy(m.seatWorld).sub(tmp);
-    const straddle = dragon ? 0.65 : 0.6 * m.size; // dragons and great unicorns have broader backs
+    const straddle = m.straddle ?? (dragon ? 0.65 : 0.6 * m.size); // dragons and great unicorns have broader backs, Bubbles broadest
     pm.legL.rotation.set(0.4, 0, -straddle);
     pm.legR.rotation.set(0.4, 0, straddle);
     const rein = 0.75 + Math.sin(m.phase * Math.PI * 4) * 0.08 * move;

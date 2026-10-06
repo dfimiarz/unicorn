@@ -2,6 +2,7 @@ import { findLand } from './world.js';
 import { player } from './player.js';
 import { makeMob, mobs, HORSE_COATS, HORSE_NAMES, UNICORN_NAMES, UNICORN_COAT, GREAT_UNICORN_SIZE } from './horse.js';
 import { makeDragon, dragons, DRAGON_COLORS } from './dragon.js';
+import { makePotatoDragon, POTATO } from './potato.js';
 
 // one unicorn and one horse right next to the start, a great unicorn a little further off, the
 // rest scattered around the island. Every other unicorn is a great unicorn.
@@ -22,6 +23,11 @@ DRAGON_COLORS.forEach((c, i) => {
   const p = i === 0 ? near(22) : findLand(0, 0, 60);
   if (p) makeDragon(c, p);
 });
+// and Bubbles the potato dragon, hopping about not far from the start
+{
+  const p = near(16) || findLand(0, 0, 60);
+  if (p) makePotatoDragon(POTATO, p);
+}
 
 export const totalUnicorns = mobs.filter(m => m.kind === 'unicorn').length;
 export const totalHorses = mobs.length - totalUnicorns;

@@ -71,7 +71,7 @@ export function updateHud() {
   crosshairEl.classList.toggle('hot', !!(m?.kind === 'dragon' && m.aimInRange)); // the dragon's flames reach
   if (m) {
     setText(statusEl, m.kind === 'dragon'
-      ? `Riding ${m.label}\nSpace: take off / fly up · Shift: dive\nLeft click (hold): breathe fire · B: barrel roll (${m.rollCd > 0 ? `ready in ${m.rollCd.toFixed(1)}s` : 'flying'})\nE: get off`
+      ? `Riding ${m.label}\nSpace: take off / fly up · Shift: dive\nLeft click (hold): ${m.weapon} · B: barrel roll (${m.rollCd > 0 ? `ready in ${m.rollCd.toFixed(1)}s` : 'flying'})\nE: get off`
       : m.kind === 'unicorn'
       ? `Riding ${m.label}\nSpace: fly up · Shift: fly down\nB: barrel roll (flying) · E: get off`
       : `Riding ${m.label}\nSpace: jump · E: get off`);
