@@ -7,11 +7,22 @@ import { scene } from './render.js';
 import { Entity, physics, accelerate } from './physics.js';
 import { box, pivot, fixed, shade, bake, nameTag, barrelRoll, LEATHER, GOLD } from './modelkit.js';
 import { spawnParticle } from './particles.js';
-import { scorch, FIRE_COLORS } from './fire.js';
+import { scorch, fireIn, FIRE_COLORS } from './fire.js';
 import { player } from './player.js';
+import { raycast } from './camera.js';
 import { state } from './state.js';
 
 const tmp = new THREE.Vector3();
+
+// The screech a dragon lets out as it starts a barrel roll or is hurt, quieter the further off it is
+const SCREECH = new Audio('screech.m4a'), SCREECH_RANGE = 80;
+function screech(d) {
+  const vol = 1 - d.pos.distanceTo(player.pos) / SCREECH_RANGE;
+  if (vol <= 0) return;
+  const s = SCREECH.cloneNode(); // a fresh copy so screeches from several dragons can overlap
+  s.volume = Math.min(1, vol);
+  s.play().catch(() => {}); // the browser may refuse before the page has been clicked
+}
 
 // Dragon rig, built like a winged T-rex: root → body pivot at the hips, balanced over two big
 // bird-like hind legs (hip → knee → ankle → toes), a long tail held out behind as a counterweight,
@@ -357,6 +368,10 @@ function animateDragon(d, dt) {
     }
     if (s >= 1 || d.state !== 'idle') d.idle = null;
   }
+  // ridden, it looks where its rider aims (see aimDragon)
+  d.aimW += ((d.rider ? 1 : 0) - d.aimW) * Math.min(1, dt * 6);
+  neckYaw += d.aimYaw * d.aimW;
+  headUp += d.aimPitch * d.aimW * 0.8; // the neck bends with it, so this tips the head about aimPitch
   // breathing fire (left mouse button held while ridden): jaws open wide
   d.fireW += ((d.breathing && d.rider ? 1 : 0) - d.fireW) * Math.min(1, dt * 8);
   jawOpen = Math.max(jawOpen, 0.6 * d.fireW);
@@ -366,6 +381,12 @@ function animateDragon(d, dt) {
   // apply
   md.body.position.set(0, DRAGON_HIP_Y + bob + Math.sin(state.time * 1.6 + d.breath) * 0.012, 0);
   md.body.rotation.set(pitch, sway, roll);
+  if (d.roll && !d.screeched) screech(d);
+  d.screeched = !!d.roll;
+  // and as it's hurt, unless it's mid-roll and already screeching (wherever it runs: elsewhere its
+  // health comes in with its updates)
+  if (d.health < d.heardHealth && !d.roll) screech(d);
+  d.heardHealth = d.health;
   barrelRoll(d, dt, md.body, 0.12); // about the middle of the torso
   let neckPitch = 0;
   md.neckSegs.forEach((s, i) => {
@@ -396,21 +417,22 @@ function animateDragon(d, dt) {
   md.root.rotation.y = d.yaw;
   md.root.updateMatrixWorld(true);
   md.seat.getWorldPosition(d.seatWorld);
-  if (d.fireW > 0.6) breatheFire(d, dt);
+  md.head.localToWorld(d.fireFrom.set(0, -0.08, -1.1)); // kept up to date for aiming, too
+  d.fireOn = d.fireW > 0.6;
+  if (d.fireOn) breatheFire(d, dt);
   else d.fireAcc = 0;
 }
 
-// A roaring stream of flame from the open jaws, along the way the head points, with a little
+// A roaring stream of flame from the open jaws, where its rider aims, with a little
 // smoke. Flames rise as they go, and are thrown along at the dragon's own speed too. Wood and
 // leaves the flames reach catch fire.
 const FIRE_RATE = 90;  // particles a second
 const FIRE_RANGE = 7;  // how far the flames reach, in blocks
-const fireFrom = new THREE.Vector3(), fireDir = new THREE.Vector3(), scorchDir = new THREE.Vector3();
+const scorchDir = new THREE.Vector3();
 function breatheFire(d, dt) {
-  const head = d.model.head;
-  head.localToWorld(fireFrom.set(0, -0.08, -1.1));
-  head.localToWorld(fireDir.set(0, -0.08, -2.1)).sub(fireFrom).normalize();
-  for (let i = 0; i < 2; i++) { // a couple of rays a frame, spread like the flames
+  const { fireFrom, fireDir } = d, a = d.yaw + d.aimYaw, cp = Math.cos(d.aimPitch);
+  fireDir.set(-Math.sin(a) * cp, Math.sin(d.aimPitch), -Math.cos(a) * cp);
+  for (let i = 0; d.rider === player && i < 2; i++) { // a couple of rays a frame, spread like the flames (only on the rider's computer)
     scorchDir.set(fireDir.x + rnd(-0.09, 0.09), fireDir.y + rnd(-0.09, 0.09), fireDir.z + rnd(-0.09, 0.09)).normalize();
     scorch(fireFrom, scorchDir, FIRE_RANGE);
   }
@@ -423,6 +445,76 @@ function breatheFire(d, dt) {
   }
 }
 
+// Aiming: the rider's crosshair, looking from `eye` along `dir`. The dragon turns its neck and head
+// toward whatever the crosshair is on (a block, or another dragon close to it, so a moving one is
+// easier to hit) and its flames go straight there. While breathing, it swings its body round to
+// face its target too. aimYaw is from the way it faces, aimPitch up or down from level;
+// they're sent to the other players with the rest, so they see the flames go the same way.
+const AIM_RANGE = 40;                            // blocks
+const AIM_YAW = 1, AIM_UP = 0.7, AIM_DOWN = -1.1; // how far the neck turns, in radians
+const AIM_ASSIST = 0.12;                         // radians off the crosshair a dragon still counts as aimed at
+const aimAt = new THREE.Vector3();
+export function aimDragon(d, eye, dir, dt) {
+  const hit = raycast(eye, dir, AIM_RANGE);
+  let dist = AIM_RANGE, onSomething = !!hit;
+  if (hit) { aimAt.set(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5); dist = aimAt.distanceTo(eye); }
+  else aimAt.copy(eye).addScaledVector(dir, AIM_RANGE);
+  for (const o of dragons) {
+    if (o === d) continue;
+    tmp.set(o.pos.x, o.pos.y + o.baseH / 2, o.pos.z).sub(eye);
+    const t = tmp.dot(dir);
+    if (t > 0 && t < dist && tmp.angleTo(dir) < AIM_ASSIST) { dist = t; aimAt.copy(tmp).add(eye); onSomething = true; }
+  }
+  tmp.subVectors(aimAt, d.fireFrom);
+  const yaw = wrapAngle(Math.atan2(-tmp.x, -tmp.z) - d.yaw), pitch = Math.atan2(tmp.y, Math.hypot(tmp.x, tmp.z));
+  d.aimYaw = clamp(yaw, -AIM_YAW, AIM_YAW);
+  d.aimPitch = clamp(pitch, AIM_DOWN, AIM_UP);
+  // breathing, it swings round to face its target: quickly if that's past where its neck reaches
+  if (d.breathing) d.yaw += (yaw - d.aimYaw) * Math.min(1, dt * 5) + d.aimYaw * Math.min(1, dt * 2);
+  // close enough for the flames to reach it (shown by the crosshair, see hud.js)
+  d.aimInRange = onSomething && tmp.length() < FIRE_RANGE + 1 && pitch === d.aimPitch;
+}
+
+// Health: fire costs a dragon a heart, at most one every HURT_COOLDOWN seconds, whether it's another
+// dragon's breath or burning blocks it flies or walks through. Out of hearts, it throws its rider
+// off (see controls.js) and can't be ridden until it has healed a heart. Left alone it heals.
+// A dragon in a barrel roll spins clear of the flames and isn't hurt. Playing together, the
+// computer running the dragon decides, and sends its health with the rest.
+export const DRAGON_HEARTS = 10;
+const HURT_COOLDOWN = 1, HEAL_DELAY = 8, HEAL_TIME = 3; // seconds
+const HIT_RADIUS = 1.5; // around the dragon's middle, for breath; it widens along the flames
+const hitV = new THREE.Vector3();
+function inFire(d) {
+  tmp.set(d.pos.x, d.pos.y + d.baseH / 2, d.pos.z);
+  for (const o of dragons) {
+    if (o === d || !o.fireOn) continue;
+    const v = hitV.subVectors(tmp, o.fireFrom), t = v.dot(o.fireDir), r = HIT_RADIUS + t * 0.15;
+    if (t > 0 && t < FIRE_RANGE + HIT_RADIUS && v.lengthSq() - t * t < r * r) return true;
+  }
+  const x = d.pos.x, z = d.pos.z;
+  return fireIn(Math.floor(x - 1.5), Math.floor(d.pos.y - 0.5), Math.floor(z - 1.5), Math.floor(x + 1.5), Math.floor(d.pos.y + d.h), Math.floor(z + 1.5));
+}
+function hurtByFire(d, dt) {
+  d.hurtCd -= dt;
+  if (d.hurtCd <= 0 && d.health > 0 && !d.roll && inFire(d)) {
+    d.health--;
+    d.hurtCd = HURT_COOLDOWN; d.healT = HEAL_DELAY;
+  } else if (d.health < DRAGON_HEARTS && (d.healT -= dt) <= 0) {
+    d.health++; d.healT = HEAL_TIME;
+  }
+}
+
+// Barrel rolls have a cooldown once they finish, which grows the more the dragon spins: each roll
+// adds one to its dizziness, which wears off by one every DIZZY_TIME seconds, and the cooldown is
+// ROLL_COOLDOWN seconds for each.
+const ROLL_COOLDOWN = 0.6, DIZZY_TIME = 4;
+function rollCooldown(d, dt) {
+  if (d.roll && !d.rollCounted) { d.dizzy++; d.rollCd = ROLL_COOLDOWN * d.dizzy; }
+  d.rollCounted = !!d.roll;
+  if (!d.roll) d.rollCd = Math.max(0, d.rollCd - dt);
+  d.dizzy = Math.max(0, d.dizzy - dt / DIZZY_TIME);
+}
+
 const DRAGON_HOME_RADIUS = 55; // flying dragons turn back toward the island past this
 export function updateDragon(d, dt) {
   d.aiTimer -= dt;
@@ -432,8 +524,8 @@ export function updateDragon(d, dt) {
   d.groundY = Math.max(columnTop(gx, gz), WATER) + 1;
   const setState = (s, t) => { d.state = s; d.stateT = 0; d.aiTimer = t; };
 
-  if (d.rider) {
-    // steered by the player (see rideDragon)
+  if (d.rider || d.remote) {
+    // steered by its rider (see rideDragon), or run on another computer (see multiplayer.js)
   } else if (d.state === 'fly' || d.state === 'land') {
     // wander in lazy curves, heading back over the island if it strays out to sea
     d.wanderYaw += Math.sin(state.time * 0.3 + d.breath) * dt * 0.6;
@@ -489,6 +581,7 @@ export function updateDragon(d, dt) {
     physics(d, dt);
   }
 
+  if (!d.remote) { rollCooldown(d, dt); hurtByFire(d, dt); }
   animateDragon(d, dt);
   const tagDist = d.pos.distanceTo(player.pos);
   d.tag.visible = !d.rider && tagDist > 4 && tagDist < 20;
@@ -540,7 +633,9 @@ export function makeDragon(c, p) {
     phase: 0, flyW: 0, reachW: 0, fvy: 0, landT: 0, turn: 0, idle: null, idleT: 0, idleCd: 2 + Math.random() * 4, lookTo: 0,
     blinkT: Math.random() * 4, breath: Math.random() * 6, glideT: 0, flapping: false,
     wingFold: 1, wingAmp: 0, wingFreq: 1, wingDihedral: 0.12, wingP: 0, roll: null, barrel: 0,
-    breathing: false, fireW: 0, fireAcc: 0,
+    breathing: false, fireW: 0, fireAcc: 0, fireOn: false, fireFrom: new THREE.Vector3(), fireDir: new THREE.Vector3(),
+    aimYaw: 0, aimPitch: 0, aimW: 0, aimInRange: false,
+    health: DRAGON_HEARTS, hurtCd: 0, healT: 0, rollCd: 0, dizzy: 0, rollCounted: false,
   });
   d.pos.copy(p);
   d.yaw = d.wanderYaw = d.prevYaw = rand() * Math.PI * 2;

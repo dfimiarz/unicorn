@@ -9,6 +9,7 @@ import { mobs, updateMob } from './horse.js';
 import { dragons, updateDragon } from './dragon.js';
 import './spawn.js';
 import { updatePlayer } from './controls.js';
+import { followOthers, poseOthers, sendUpdates, nearAnyPlayer } from './multiplayer.js';
 import { updateCamera } from './camera.js';
 import { updateSky } from './daynight.js';
 import { updateHud } from './hud.js';
@@ -29,18 +30,20 @@ updateChunks(400, player.pos);
 function update(dt) {
   state.time += dt;
   updatePlayer(dt);
+  followOthers(dt);
   for (const m of mobs) {
-    // animals far from the player wait (hidden) until the player comes back
-    const active = Math.hypot(m.pos.x - player.pos.x, m.pos.z - player.pos.z) < MOB_ACTIVE_DIST;
+    // animals far from every player wait (hidden) until someone comes back
+    const active = nearAnyPlayer(m.pos, MOB_ACTIVE_DIST);
     m.model.root.visible = active;
     if (active) updateMob(m, dt);
   }
   for (const d of dragons) {
-    const active = Math.hypot(d.pos.x - player.pos.x, d.pos.z - player.pos.z) < MOB_ACTIVE_DIST;
+    const active = nearAnyPlayer(d.pos, MOB_ACTIVE_DIST);
     d.model.root.visible = active;
     if (active) updateDragon(d, dt);
   }
   updatePlayerModel(dt);
+  poseOthers(dt);
   updateFire(dt);
   updateParticles(dt);
   updateClouds(dt, player.pos);
@@ -48,6 +51,7 @@ function update(dt) {
   updateCamera();
   updateSky(dt);
   updateHud();
+  sendUpdates(dt);
 }
 
 let last = performance.now();

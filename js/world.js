@@ -3,6 +3,7 @@ import { H, CH, WATER } from './config.js';
 import { mulberry32 } from './util.js';
 import { seed, setSeed, hash3, smooth, fbm } from './noise.js';
 import { B } from './blocks.js';
+import { session, send } from './net.js';
 
 // The world is endless: it is stored as 16×16×H chunks that are generated from the seed the
 // first time anything looks at them. Chunks far from the player are dropped again unless edited.
@@ -45,7 +46,12 @@ function pickSeed() {
   }
   return best; // practically never reached; take the most island-like seed seen
 }
-setSeed(pickSeed());
+// in multiplayer everyone plays in the world the first player picked
+if (session.seed !== null) setSeed(session.seed);
+else {
+  setSeed(pickSeed());
+  if (session.online) send({ t: 'seed', seed });
+}
 export const rand = mulberry32(seed);
 
 function generateChunk(cx, cz) {
@@ -123,6 +129,12 @@ export function setBlock(x, y, z, t) {
     const n = getChunk((x + dx) >> 4, (z + dz) >> 4);
     if (n.mesh) dirtyChunks.add(n);
   }
+}
+
+// A change the other players should see too: one the player makes, or fire burning a block away.
+export function editBlock(x, y, z, t) {
+  setBlock(x, y, z, t);
+  send({ t: 'edit', x, y, z, b: t });
 }
 
 // a random grass-topped spot within r blocks of (cx, cz), standing on the ground

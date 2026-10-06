@@ -10,6 +10,7 @@ import { lookDir } from './camera.js';
 import { player } from './player.js';
 import { keys, isLocked } from './input.js';
 import { state } from './state.js';
+import { session } from './net.js';
 
 // The day/night cycle: moves the sun and moon, and sets the lights, fog, water and god rays to match.
 const UNDERWATER = new THREE.Color(0x1f4f8f);
@@ -37,8 +38,13 @@ function skyColorAt(dir, out) {
   return out.setRGB(t[0] + NIGHT_SKY.x * nf, t[1] + NIGHT_SKY.y * nf, t[2] + NIGHT_SKY.z * nf, THREE.SRGBColorSpace);
 }
 
+// Playing together, the server keeps the time for everyone (see multiplayer.js): it sets the clock
+// every couple of seconds, and runs it fast while anyone holds T.
+export function setClock(h) { hour = h; }
+const fastForward = () => session.online ? session.ffwd : isLocked() && keys.KeyT;
+
 export function updateSky(dt) {
-  const speed = isLocked() && keys.KeyT ? 40 : 1;
+  const speed = fastForward() ? 40 : 1;
   hour = (hour + dt * speed * 24 / DAY_SECONDS) % 24;
   const a = (hour - 6) / 24 * Math.PI * 2;
   sunDir.set(Math.cos(a), Math.sin(a) * Math.cos(SUN_TILT), Math.sin(a) * Math.sin(SUN_TILT)).normalize();
@@ -145,5 +151,5 @@ const PHASES = [[4.8, 'Night'], [5.8, 'Dawn'], [7.2, 'Sunrise'], [11, 'Morning']
 export function clockText() {
   const h = Math.floor(hour), m = Math.floor((hour - h) * 60);
   const phase = PHASES.find(p => hour < p[0])[1];
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')} · ${phase}` + (isLocked() && keys.KeyT ? ' ⏩' : '');
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')} · ${phase}` + (fastForward() ? ' ⏩' : '');
 }

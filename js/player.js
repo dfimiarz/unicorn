@@ -7,11 +7,12 @@ import { Entity } from './physics.js';
 import { box, pivot, bake } from './modelkit.js';
 import { state } from './state.js';
 
-// Models face -Z, so rotation.y uses the same yaw as the camera.
-function makePlayerModel() {
+// Models face -Z, so rotation.y uses the same yaw as the camera. Other players (multiplayer.js) get
+// the same model in their own shirt colour.
+export function makePlayerModel(SHIRT = 0x2aa5a5) {
   const root = new THREE.Group();
   root.rotation.order = 'YXZ';
-  const SKIN = 0xe0ac87, SHIRT = 0x2aa5a5, PANTS = 0x3b46a8, HAIR = 0x4a2f1b;
+  const SKIN = 0xe0ac87, PANTS = 0x3b46a8, HAIR = 0x4a2f1b;
   const legL = pivot(-0.1125, 0.675, 0, root), legR = pivot(0.1125, 0.675, 0, root);
   for (const l of [legL, legR]) { box(0.225, 0.6, 0.225, PANTS, 0, -0.3, 0, l); box(0.23, 0.08, 0.23, 0x444444, 0, -0.64, 0, l); }
   box(0.45, 0.675, 0.225, SHIRT, 0, 1.0125, 0, root);
@@ -26,7 +27,7 @@ function makePlayerModel() {
   box(0.14, 0.04, 0.02, 0x9a5a4a, 0, 0.1, -0.226, head);
   bake(root);
   scene.add(root);
-  return { root, legL, legR, armL, armR, head };
+  return { root, legL, legR, armL, armR, head, phase: 0 };
 }
 
 export const player = new Entity(0.3, 1.8);
@@ -36,9 +37,13 @@ player.pos.copy(findLand(0, 0, 15) || findLand(0, 0, 60) || new THREE.Vector3(0.
 
 const tmp = new THREE.Vector3();
 export function updatePlayerModel(dt) {
-  const pm = playerModel;
-  pm.root.visible = state.camMode === 1;
-  const m = player.riding;
+  playerModel.root.visible = state.camMode === 1;
+  posePlayer(playerModel, player.riding, player.pos, player.vel, state.yaw, state.pitch, dt);
+}
+
+// Pose a player model: sitting on the animal m, or else standing at pos and walking at the speed of
+// vel. Either way the head turns toward where the player looks (yaw, pitch).
+export function posePlayer(pm, m, pos, vel, yaw, pitch, dt) {
   if (m) {
     // sit in the saddle, tilt with the animal, lean forward at a gallop, when it rears, or in flight
     const body = m.model.body, dragon = m.kind === 'dragon';
@@ -55,16 +60,16 @@ export function updatePlayerModel(dt) {
     pm.armR.rotation.set(rein, 0, 0);
   } else {
     pm.root.rotation.x = pm.root.rotation.z = 0;
-    pm.root.position.copy(player.pos);
-    pm.root.rotation.y = lerpAngle(pm.root.rotation.y, state.yaw, dt * 10);
-    const hs = Math.hypot(player.vel.x, player.vel.z);
-    player.phase = (player.phase || 0) + dt * hs * 2.2;
-    const a = Math.sin(player.phase) * Math.min(0.9, hs * 0.2);
+    pm.root.position.copy(pos);
+    pm.root.rotation.y = lerpAngle(pm.root.rotation.y, yaw, dt * 10);
+    const hs = Math.hypot(vel.x, vel.z);
+    pm.phase += dt * hs * 2.2;
+    const a = Math.sin(pm.phase) * Math.min(0.9, hs * 0.2);
     pm.legL.rotation.set(a, 0, 0);
     pm.legR.rotation.set(-a, 0, 0);
     pm.armL.rotation.set(-a, 0, 0);
     pm.armR.rotation.set(a, 0, 0);
   }
-  pm.head.rotation.y = Math.max(-1.2, Math.min(1.2, wrapAngle(state.yaw - pm.root.rotation.y)));
-  pm.head.rotation.x = state.pitch * 0.8;
+  pm.head.rotation.y = Math.max(-1.2, Math.min(1.2, wrapAngle(yaw - pm.root.rotation.y)));
+  pm.head.rotation.x = pitch * 0.8;
 }

@@ -2,7 +2,10 @@ import { HOTBAR, BLOCK_NAMES, ICON_TILE, TS, atlas } from './blocks.js';
 import { player } from './player.js';
 import { nearestMob, ridden } from './riding.js';
 import { totalUnicorns, totalHorses, totalDragons } from './spawn.js';
+import { DRAGON_HEARTS } from './dragon.js';
 import { clockText } from './daynight.js';
+import { playerCount } from './multiplayer.js';
+import { session } from './net.js';
 
 // The hotbar, the clock, the frame rate, and the status and score text.
 export let selected = 0; // hotbar slot
@@ -26,7 +29,7 @@ export function selectSlot(i) {
 }
 selectSlot(0);
 
-const clockEl = document.getElementById('clock');
+const clockEl = document.getElementById('clock'), crosshairEl = document.getElementById('crosshair');
 const statusEl = document.getElementById('status'), scoreEl = document.getElementById('score'), promptEl = document.getElementById('prompt');
 function setText(el, txt) { if (el._t !== txt) { el._t = txt; el.textContent = txt; } }
 
@@ -43,13 +46,32 @@ function updateFps() {
   fpsFrames = 0; fpsStart = now;
 }
 
+// the health of the dragon we're riding, as a row of hearts that shakes when it loses one
+const heartsEl = document.getElementById('hearts');
+const heartEls = Array.from({ length: DRAGON_HEARTS }, () => {
+  const h = document.createElement('span');
+  h.textContent = '♥';
+  return heartsEl.appendChild(h);
+});
+let shownHealth = -1, shownDragon = null;
+function updateHearts(m) {
+  const hp = m?.kind === 'dragon' ? m.health : -1;
+  if (hp === shownHealth && m === shownDragon) return;
+  if (hp >= 0 && hp < shownHealth && m === shownDragon) { heartsEl.classList.remove('hurt'); void heartsEl.offsetWidth; heartsEl.classList.add('hurt'); }
+  shownHealth = hp; shownDragon = m;
+  heartsEl.hidden = hp < 0;
+  heartEls.forEach((h, i) => h.classList.toggle('empty', i >= hp));
+}
+
 export function updateHud() {
   updateFps();
   setText(clockEl, clockText());
   const m = player.riding;
+  updateHearts(m);
+  crosshairEl.classList.toggle('hot', !!(m?.kind === 'dragon' && m.aimInRange)); // the dragon's flames reach
   if (m) {
     setText(statusEl, m.kind === 'dragon'
-      ? `Riding ${m.label}\nSpace: take off / fly up · Shift: dive\nLeft click (hold): breathe fire · B: barrel roll (flying)\nE: get off`
+      ? `Riding ${m.label}\nSpace: take off / fly up · Shift: dive\nLeft click (hold): breathe fire · B: barrel roll (${m.rollCd > 0 ? `ready in ${m.rollCd.toFixed(1)}s` : 'flying'})\nE: get off`
       : m.kind === 'unicorn'
       ? `Riding ${m.label}\nSpace: fly up · Shift: fly down\nB: barrel roll (flying) · E: get off`
       : `Riding ${m.label}\nSpace: jump · E: get off`);
@@ -61,7 +83,7 @@ export function updateHud() {
   }
   let u = 0, h = 0, g = 0;
   for (const r of ridden) r.kind === 'unicorn' ? u++ : r.kind === 'dragon' ? g++ : h++;
-  setText(scoreEl, `Unicorns ridden: ${u}/${totalUnicorns}\nHorses ridden: ${h}/${totalHorses}\nDragons ridden: ${g}/${totalDragons}` +
+  setText(scoreEl, (session.online ? `Players online: ${playerCount()}\n` : '') + `Unicorns ridden: ${u}/${totalUnicorns}\nHorses ridden: ${h}/${totalHorses}\nDragons ridden: ${g}/${totalDragons}` +
     (totalUnicorns && u === totalUnicorns ? '\n✨ You rode every unicorn! ✨' : '') +
     (totalDragons && g === totalDragons ? '\n🐉 You rode every dragon! 🐉' : ''));
 }

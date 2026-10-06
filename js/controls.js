@@ -2,14 +2,14 @@ import * as THREE from 'three';
 import { H } from './config.js';
 import { lerpAngle, rnd } from './util.js';
 import { B, BLOCK_COLORS, RAINBOW_HEX, HOTBAR } from './blocks.js';
-import { getBlock, setBlock, inBounds } from './world.js';
+import { getBlock, editBlock, inBounds } from './world.js';
 import { physics, accelerate, ledgeJump } from './physics.js';
 import { spawnParticle } from './particles.js';
 import { player } from './player.js';
 import { mobs } from './horse.js';
-import { dragons, rideDragon } from './dragon.js';
-import { nearestMob, mount, dismount } from './riding.js';
-import { target } from './camera.js';
+import { dragons, rideDragon, aimDragon } from './dragon.js';
+import { nearestMob, tryMount, getOff, thrownOff } from './riding.js';
+import { target, eyePos, lookDir } from './camera.js';
 import { keys, isLocked } from './input.js';
 import { selected, selectSlot, toggleFps } from './hud.js';
 import { state } from './state.js';
@@ -23,7 +23,7 @@ function overlapsBlock(e, x, y, z) {
 function breakBlock() {
   if (!target || target.y === 0) return; // bedrock floor stays
   const t = getBlock(target.x, target.y, target.z);
-  setBlock(target.x, target.y, target.z, B.AIR);
+  editBlock(target.x, target.y, target.z, B.AIR);
   const c = new THREE.Vector3(target.x + 0.5, target.y + 0.5, target.z + 0.5);
   for (let i = 0; i < 12; i++) {
     const col = t === B.RAINBOW ? RAINBOW_HEX[i % 6] : BLOCK_COLORS[t];
@@ -37,7 +37,7 @@ function placeBlock() {
   if (overlapsBlock(player.riding || player, x, y, z)) return;
   for (const m of mobs) if (overlapsBlock(m, x, y, z)) return;
   for (const d of dragons) if (overlapsBlock(d, x, y, z)) return;
-  setBlock(x, y, z, HOTBAR[selected]);
+  editBlock(x, y, z, HOTBAR[selected]);
 }
 
 // ---------------------------------------------------------------- key + mouse actions
@@ -46,15 +46,16 @@ addEventListener('keydown', e => {
   if (e.code === 'F3') { e.preventDefault(); if (!e.repeat) toggleFps(); return; }
   if (!isLocked() || e.repeat) return;
   if (e.code === 'KeyE') {
-    if (player.riding) dismount();
-    else { const m = nearestMob(); if (m) mount(m); }
+    if (player.riding) getOff();
+    else { const m = nearestMob(); if (m) tryMount(m); }
   }
   if (e.code === 'KeyV') state.camMode = 1 - state.camMode;
   if (e.code === 'KeyB') {
     // a barrel roll, only while flying: toward the right if D is held, otherwise to the left
+    // (dragons have to wait out a cooldown between rolls, see dragon.js)
     const m = player.riding;
     const flying = m && (m.kind === 'dragon' ? m.state === 'fly' : m.kind === 'unicorn' && m.airTime > 0.25);
-    if (flying && !m.roll) m.roll = { t: 0, dir: keys.KeyD || keys.ArrowRight ? -1 : 1 };
+    if (flying && !m.roll && !(m.rollCd > 0)) m.roll = { t: 0, dir: keys.KeyD || keys.ArrowRight ? -1 : 1 };
   }
   if (e.code.startsWith('Digit')) {
     const n = +e.code.slice(5);
@@ -88,10 +89,12 @@ export function updatePlayer(dt) {
   const len = Math.hypot(mx, mz);
   if (len > 0) { mx /= len; mz /= len; }
 
+  if (player.riding?.health === 0) thrownOff();
   const m = player.riding;
   if (m && m.rearT > 0) { mx = mz = 0; } // hold on while it rears
   if (m && m.kind === 'dragon') {
     m.breathing = locked && keys.Mouse0;
+    aimDragon(m, eyePos(), lookDir(), dt);
     rideDragon(m, dt, mx, mz, f < 0, space, shift);
     player.pos.copy(m.pos);
     player.vel.set(0, 0, 0);

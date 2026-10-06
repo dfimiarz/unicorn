@@ -5,6 +5,7 @@ import { spawnParticle } from './particles.js';
 import { player } from './player.js';
 import { mobs, REAR_TIME } from './horse.js';
 import { dragons } from './dragon.js';
+import { session, send } from './net.js';
 
 // Getting on and off horses, unicorns and dragons.
 
@@ -14,7 +15,7 @@ export const ridden = new Set();
 export function nearestMob() {
   let best = null, bd = Infinity;
   const check = (m, reach) => {
-    if (m.rider) return;
+    if (m.rider || m.health === 0) return; // a dragon out of hearts is too weak to carry anyone
     const d = Math.hypot(m.pos.x - player.pos.x, m.pos.z - player.pos.z);
     if (d < reach && d < bd && Math.abs(m.pos.y - player.pos.y) < 2.5) { bd = d; best = m; }
   };
@@ -22,6 +23,31 @@ export function nearestMob() {
   for (const d of dragons) check(d, 3.6);
   return best;
 }
+// Playing together, climbing on goes through the server, so two players can't get on the same
+// animal at once: it answers with who got it, and the winner mounts (see multiplayer.js).
+let asked = null; // the animal we've asked the server for, until it answers
+export function tryMount(m) {
+  if (!session.online) return mount(m);
+  if (asked) return;
+  asked = m.netId;
+  send({ t: 'mount', id: m.netId });
+}
+export function mountAnswered(id) { if (id === asked) asked = null; }
+export function getOff() {
+  const m = player.riding;
+  dismount();
+  send({ t: 'dismount', id: m.netId });
+}
+// A dragon out of hearts throws its rider off, up into the air and out to the side
+export function thrownOff() {
+  const m = player.riding;
+  getOff();
+  const dx = player.pos.x - m.pos.x, dz = player.pos.z - m.pos.z, len = Math.hypot(dx, dz) || 1;
+  player.vel.set(dx / len * 5, 8, dz / len * 5);
+  const p = m.pos.clone(); p.y += m.seatRestY;
+  for (let i = 0; i < 18; i++) spawnParticle(p, rnd(-2, 2), rnd(1, 3), rnd(-2, 2), i % 3 ? 0x6e6e6e : 0xff5a1a, rnd(0.8, 1.3), 1, rnd(1.2, 2));
+}
+
 export function mount(m) {
   player.riding = m;
   m.rider = player;

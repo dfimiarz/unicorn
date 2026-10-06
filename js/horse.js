@@ -537,8 +537,9 @@ export function makeMob(kind, coat, name, p, size = 1) {
 
 const tmp = new THREE.Vector3();
 const SPARKLE_COLORS = [...RAINBOW_HEX, 0xffffff, 0xffffff];
+// m.remote: another computer runs this animal (multiplayer.js moves it to match), so only animate it
 export function updateMob(m, dt) {
-  if (!m.rider) {
+  if (!m.rider && !m.remote) {
     m.aiTimer -= dt;
     m.turnCd -= dt;
     if (m.aiTimer <= 0) {
