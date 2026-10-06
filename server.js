@@ -49,7 +49,9 @@ function sendFrame(socket, text) {
     : Buffer.concat([Buffer.from([0x81, 127]), (() => { const b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(n)); return b; })()]);
   socket.write(Buffer.concat([head, body]));
 }
-// Reads frames out of the socket and hands each complete text message to onText.
+// Reads frames out of the socket and hands each complete text message to onText. A message bigger
+// than the game ever sends closes the connection, rather than filling up the server's memory.
+const MAX_MESSAGE = 64 * 1024;
 function readFrames(socket, onText, onClose) {
   let buf = Buffer.alloc(0), parts = [];
   socket.on('data', chunk => {
@@ -62,6 +64,7 @@ function readFrames(socket, onText, onClose) {
       else if (len === 127) { if (buf.length < 10) return; len = Number(buf.readBigUInt64BE(2)); at = 10; }
       const mask = masked ? buf.subarray(at, at + 4) : null;
       if (masked) at += 4;
+      if (len + parts.reduce((n, b) => n + b.length, 0) > MAX_MESSAGE) return socket.destroy();
       if (buf.length < at + len) return;
       const payload = Buffer.from(buf.subarray(at, at + len));
       if (mask) for (let i = 0; i < payload.length; i++) payload[i] ^= mask[i & 3];
@@ -85,7 +88,7 @@ server.on('upgrade', (req, socket) => {
   const accept = crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
   socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ' + accept + '\r\n\r\n');
   socket.setNoDelay(true);
-  const name = (url.searchParams.get('name') || '').trim().slice(0, 20);
+  const name = (url.searchParams.get('name') || '').replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim().slice(0, 20);
   join(socket, name);
 });
 
@@ -96,7 +99,7 @@ const waiting = [];
 const edits = new Map();   // "x,y,z" -> block type, every block changed since the world began
 const riders = new Map();  // animal id -> id of the player riding it
 const burns = new Map();   // "x,y,z" -> when that block caught fire, for blocks still burning
-const BURN_MAX = 15000;    // ms; longer than any block takes to burn away
+const BURN_MAX = 60000;    // ms; longer than any block takes to burn away, even on a slow computer
 function pruneBurns() {
   const now = Date.now();
   for (const [k, at] of burns) if (now - at > BURN_MAX) burns.delete(k);
@@ -123,9 +126,12 @@ function broadcast(msg, except) {
 
 function join(socket, name) {
   const id = nextId++;
-  const p = { id, name: name || `Player ${id}`, socket, ready: false, away: false, s: null };
+  const p = { id, name: name || `Player ${id}`, socket, ready: false, away: false, s: null, track: {}, tokens: BURST, tokensAt: Date.now() };
   players.set(id, p);
-  readFrames(socket, text => { try { receive(p, JSON.parse(text)); } catch { /* ignore bad messages */ } }, () => leave(p));
+  readFrames(socket, text => {
+    if (!allowance(p)) return; // sending far more than the game does: drop it
+    try { receive(p, JSON.parse(text)); } catch { /* ignore bad messages */ }
+  }, () => leave(p));
   if (seed !== null) welcome(p);
   else if (!chooser) { chooser = p; welcome(p); } // the first player picks the world
   else waiting.push(p);
@@ -170,26 +176,126 @@ function leave(p) {
   console.log(`${p.name} left`);
 }
 
+// ---------------------------------------------------------------- checking what players send
+// The game runs in each player's browser, where anyone can change it, so the server checks every
+// message before passing it on: that it's well formed (so it can't break anyone else's game), that
+// a player only sends updates for the animals theirs to run, and that nobody moves faster, reaches
+// further, or changes more of the world than the game allows. What a player does to their own
+// game only shows up for everyone else through these messages.
+//
+// These follow the game's own numbers: H and REACH in js/config.js, the block types in
+// js/blocks.js, FIRE_RANGE and DRAGON_HEARTS in js/dragon.js.
+const H = 64, REACH = 6, FIRE_RANGE = 7, DRAGON_HEARTS = 10;
+const AIR = 0, LAST_PLACEABLE = 9;      // the hotbar's blocks; bedrock (10) can't be placed
+const FAR = 1e5;                        // further from the middle than anyone will ever walk
+const RUN = 30, CLIMB = 30, FALL = 50;  // blocks a second: faster than any animal runs, flies or falls
+const SLACK = 3;                        // blocks of leeway for the jitter in when messages arrive
+const ANIMAL_STATES = new Set(['idle', 'walk', 'run', 'graze', 'takeoff', 'fly', 'land']);
+const RATE = 200, BURST = 400;          // messages a second; the game sends a few dozen
+
+const num = (v, lo = -FAR, hi = FAR) => typeof v === 'number' && v >= lo && v <= hi; // NaN and Infinity fail
+const int = (v, lo = -FAR, hi = FAR) => Number.isInteger(v) && v >= lo && v <= hi;
+const nums = (v, n, lo, hi) => Array.isArray(v) && v.length === n && v.every(x => num(x, lo, hi));
+const isBlock = m => int(m.x) && int(m.y, 0, H - 1) && int(m.z);
+const animalId = id => typeof id === 'string' && /^[md]\d{1,3}$/.test(id);
+
+function allowance(p) {
+  const now = Date.now();
+  p.tokens = Math.min(BURST, p.tokens + (now - p.tokensAt) / 1000 * RATE);
+  p.tokensAt = now;
+  if (p.tokens < 1) return false;
+  p.tokens--;
+  return true;
+}
+
+// Where something (a player or an animal) is allowed to have got to since the last update: any
+// further than it could have run, climbed or fallen in the time, and it only gets that far.
+function moveTo(track, [x, y, z]) {
+  const now = Date.now();
+  if (track.pos) {
+    const [px, py, pz] = track.pos, dt = (now - track.at) / 1000;
+    const dx = x - px, dz = z - pz, d = Math.hypot(dx, dz), maxD = RUN * dt + SLACK;
+    if (d > maxD) { x = px + dx / d * maxD; z = pz + dz / d * maxD; }
+    y = Math.min(py + CLIMB * dt + SLACK, Math.max(py - FALL * dt - SLACK, y));
+  }
+  track.pos = [x, y, z]; track.at = now;
+  return track.pos;
+}
+const near = (p, [x, y, z], r) => !!p.track.pos && Math.hypot(p.track.pos[0] - x, p.track.pos[1] - y, p.track.pos[2] - z) <= r;
+const ridingOf = p => { for (const [animal, rider] of riders) if (rider === p.id) return animal; return null; };
+
+const animals = new Map(); // animal id -> { pos, at, hp }, as last sent by whoever runs it
+// One animal from an update, rebuilt from only the parts that check out, or null if it isn't theirs
+// to send or doesn't make sense.
+function animalUpdate(p, e) {
+  if (!e || !animalId(e.i)) return null;
+  const rider = riders.get(e.i);
+  if (rider ? rider !== p.id : p.id !== hostId) return null; // its rider runs it, or the host if nobody's on it
+  if (!nums(e.p, 3) || !nums(e.v, 3, -100, 100) || !num(e.y) || !ANIMAL_STATES.has(e.s)) return null;
+  const dragon = e.i[0] === 'd';
+  if (dragon && (!num(e.f, -100, 100) || !int(e.hp, 0, DRAGON_HEARTS))) return null;
+  if (!animals.has(e.i)) animals.set(e.i, {});
+  const a = animals.get(e.i);
+  const out = { i: e.i, p: moveTo(a, e.p), v: e.v, y: e.y, s: e.s };
+  if (e.g) out.g = 1;
+  if (e.w) out.w = 1;
+  if (Array.isArray(e.r) && num(e.r[0], 0, 10) && (e.r[1] === 1 || e.r[1] === -1)) out.r = [e.r[0], e.r[1]];
+  if (dragon) {
+    out.f = e.f; out.hp = a.hp = e.hp;
+    if (e.b) out.b = 1;
+    if (nums(e.a, 2)) out.a = e.a;
+    if (nums(e.c, 4, -1, 1000)) out.c = e.c;
+  } else if (e.gl) out.gl = 1;
+  return out;
+}
+
 function receive(p, m) {
-  if (!p.ready) return;
+  if (!p.ready || !m) return;
   switch (m.t) {
     case 'seed': // the first player has picked the world; let everyone else in
-      if (p !== chooser || seed !== null) return;
+      if (p !== chooser || seed !== null || !num(m.seed, -(2 ** 53), 2 ** 53)) return;
       seed = m.seed; chooser = null;
       while (waiting.length) welcome(waiting.shift());
       return;
-    case 'p': p.s = m.s; return broadcast({ t: 'p', id: p.id, s: m.s }, p);  // where a player is
-    case 'a': return broadcast(m, p);                                          // where the animals are
-    case 'edit': edits.set(`${m.x},${m.y},${m.z}`, m.b); burns.delete(`${m.x},${m.y},${m.z}`); return broadcast(m, p);
-    case 'mount': // free, and they aren't already on something
-      if (!riders.has(m.id) && ![...riders.values()].includes(p.id)) { riders.set(m.id, p.id); broadcast({ t: 'rider', id: m.id, rider: p.id }); }
-      else send(p, { t: 'rider', id: m.id, rider: riders.get(m.id) ?? null }); // someone got there first
+    case 'p': { // where a player is, and where they're looking
+      const s = m.s;
+      if (!s || !nums(s.p, 3, -FAR, FAR) || !num(s.y) || !num(s.pi, -2, 2)) return;
+      p.s = { p: moveTo(p.track, s.p), y: s.y, pi: s.pi };
+      return broadcast({ t: 'p', id: p.id, s: p.s }, p);
+    }
+    case 'a': { // where the animals they run are
+      if (!Array.isArray(m.list)) return;
+      const list = m.list.slice(0, 2000).map(e => animalUpdate(p, e)).filter(Boolean);
+      return list.length && broadcast({ t: 'a', list }, p);
+    }
+    case 'edit': { // a block broken or placed, within reach; or the host's fire burning one away
+      if (!isBlock(m) || m.y === 0 || !int(m.b, AIR, LAST_PLACEABLE)) return;
+      const k = `${m.x},${m.y},${m.z}`;
+      const burnt = m.b === AIR && p.id === hostId && burns.has(k);
+      if (!burnt && !near(p, [m.x + 0.5, m.y + 0.5, m.z + 0.5], REACH + 8)) return; // + a dragon rider's height, and lag
+      edits.set(k, m.b); burns.delete(k);
+      return broadcast({ t: 'edit', x: m.x, y: m.y, z: m.z, b: m.b }, p);
+    }
+    case 'mount': { // free, close by, not out of hearts, and they aren't already on something
+      if (!animalId(m.id)) return;
+      const a = animals.get(m.id);
+      const ok = !riders.has(m.id) && !ridingOf(p) && a?.hp !== 0 && (!a?.pos || near(p, a.pos, 8));
+      if (ok) { riders.set(m.id, p.id); broadcast({ t: 'rider', id: m.id, rider: p.id }); }
+      else send(p, { t: 'rider', id: m.id, rider: riders.get(m.id) ?? null }); // no (someone got there first?)
       return;
+    }
     case 'dismount':
       if (riders.get(m.id) === p.id) { riders.delete(m.id); broadcast({ t: 'rider', id: m.id, rider: null }); }
       return;
-    case 'ignite': { const host = players.get(hostId); if (host && host !== p) send(host, m); return; } // fire is the host's job
-    case 'burn': pruneBurns(); burns.set(`${m.x},${m.y},${m.z}`, Date.now()); return broadcast(m, p);
+    case 'ignite': { // their dragon's breath reaching a block; fire is the host's job
+      const host = players.get(hostId);
+      if (!host || host === p || !isBlock(m) || ridingOf(p)?.[0] !== 'd' || !near(p, [m.x + 0.5, m.y + 0.5, m.z + 0.5], FIRE_RANGE + 6)) return;
+      return send(host, { t: 'ignite', x: m.x, y: m.y, z: m.z });
+    }
+    case 'burn': // a block catching fire, which only the host decides
+      if (p.id !== hostId || !isBlock(m)) return;
+      pruneBurns(); burns.set(`${m.x},${m.y},${m.z}`, Date.now());
+      return broadcast({ t: 'burn', x: m.x, y: m.y, z: m.z }, p);
     case 'away': p.away = !!m.on; return pickHost(); // their tab is hidden (or back)
     case 'ffwd':
       tickClock();
