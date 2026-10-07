@@ -17,7 +17,7 @@ import { state } from './state.js';
 
 const tmp = new THREE.Vector3();
 
-// The screech a dragon lets out as it starts a barrel roll or is hurt, quieter the further off it is,
+// The screech a dragon lets out when it's hurt, quieter the further off it is,
 // and higher pitched from a smaller dragon (d.voice)
 const SCREECH = new Audio('screech.m4a'), SCREECH_RANGE = 80;
 function screech(d) {
@@ -561,10 +561,8 @@ export function updateDragon(d, dt) {
   if (!d.remote) rollCooldown(d, dt); // to show when it can roll again; the server keeps its own count
   if (!session.online) hurtOrHeal(d, dt, inBreath(d, dragons, fire));
   d.animate(d, dt);
-  // it screeches as it starts a barrel roll, and as it's hurt unless it's mid-roll and already
-  // screeching (wherever it runs: elsewhere its health comes in with its updates)
-  if (d.roll && !d.screeched) screech(d);
-  d.screeched = !!d.roll;
+  // it screeches when it's hurt, unless it's mid-roll (wherever it runs: elsewhere its health
+  // comes in with its updates)
   if (d.health < d.heardHealth && !d.roll) screech(d);
   d.heardHealth = d.health;
   const tagDist = d.pos.distanceTo(player.pos);
