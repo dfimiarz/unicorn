@@ -14,7 +14,7 @@ import { setClock } from './daynight.js';
 import { keys, isLocked } from './input.js';
 import { state } from './state.js';
 
-// Playing together (the connection itself is in net.js, the server in server.js).
+// Playing together (the connection itself is in net.js, the server in server/).
 //
 // Everyone builds the same world from the same seed, then catches up on the blocks changed since
 // it began. Each computer sends where its player is a dozen times a second, and the others draw them
@@ -226,7 +226,7 @@ function showStatus() {
   const el = document.getElementById('net');
   if (!el) return;
   if (!session.online) {
-    el.textContent = 'Single player. To play together, start the game with: node server.js';
+    el.textContent = 'Single player. To play together, start the game with: go run ./server';
     return;
   }
   const n = playerCount();

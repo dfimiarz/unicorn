@@ -1,4 +1,4 @@
-// The connection to the multiplayer server (server.js). This module connects before anything else
+// The connection to the multiplayer server (server/). This module connects before anything else
 // is set up (world.js waits for it), because the world has to be built from the same seed as
 // everyone else's. If the page didn't come from the game server (say, python3 -m http.server)
 // there's nothing to connect to and the game runs on its own, as single player.

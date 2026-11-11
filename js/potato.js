@@ -196,7 +196,7 @@ function animatePotato(d, dt) {
 
   // squash and stretch, keeping its volume about the same
   const stretch = hopping ? clamp(d.vel.y * 0.025, -0.08, 0.12) : 0;
-  const sy = 1 - 0.24 * d.landT - 0.2 * takeoffC + stretch + Math.sin(state.time * 1.6 + d.breath) * 0.012;
+  const sy = 1 - 0.24 * d.landT - 0.2 * takeoffC + stretch + Math.sin(state.time * 1.6 + d.phase) * 0.012;
   const sxz = 1 / Math.sqrt(sy);
 
   // in the air: nose up on the way up a hop and down on the way down; flying, pitch with the climb,
@@ -272,9 +272,12 @@ function animatePotato(d, dt) {
   md.head.rotation.set(headUp, headYaw, 0);
   md.jaw.rotation.x = -jawOpen;
   md.tail.rotation.x = -0.1 + 0.25 * d.hopW * (d.vel.y > 0 ? -1 : 1) * 0.5;
+  // a lazy swish that grows towards the tip, a bob up and down, and a quicker wag in the air
+  d.tailP = (d.tailP || 0) + dt * 2.2 * (1 + 0.8 * Math.max(d.hopW, d.flyW)); // summed so a change of pace doesn't jump
   md.tailSegs.forEach((s, i) => {
-    s.rotation.y = 0.3 + 0.08 * i + Math.sin(state.time * 2.5 + d.breath - i * 0.6) * 0.07 - clamp(d.turn * 0.05, -0.1, 0.1);
-    s.rotation.x = 0.04 * d.flyW;
+    const t = d.tailP + d.phase - i * 0.7, grow = 0.6 + 0.25 * i;
+    s.rotation.y = 0.3 + 0.08 * i + Math.sin(t) * 0.18 * grow - clamp(d.turn * 0.12, -0.25, 0.25);
+    s.rotation.x = 0.04 * d.flyW + Math.sin(t * 0.8 + 1.3) * 0.07 * grow - 0.12 * d.landT;
   });
 
   d.blinkT -= dt;

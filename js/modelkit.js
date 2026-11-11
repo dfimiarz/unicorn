@@ -83,6 +83,19 @@ export function bake(joint) {
   joint.add(mesh);
 }
 
+// Models far from the camera drop out of the shadow pass: their shadows are tiny and each joint's
+// mesh costs a draw call there. Remembers each mesh's own setting so they come back as they were.
+// root.userData.noShadow marks the state, so the meshes are only walked when it changes.
+export function setShadows(root, on) {
+  if (root.userData.noShadow === !on) return;
+  root.userData.noShadow = !on;
+  root.traverse(o => {
+    if (!o.isMesh) return;
+    if (o.userData.castShadow0 === undefined) o.userData.castShadow0 = o.castShadow;
+    o.castShadow = on && o.userData.castShadow0;
+  });
+}
+
 // Barrel roll: one full turn of the body around its long axis, which runs `axisY` above the body
 // pivot, easing in and out. Started by setting m.roll = { t: 0, dir } (dir 1 rolls left, -1 right);
 // call after the body's pose is set each frame. m.barrel is the roll angle (0 when not rolling) and

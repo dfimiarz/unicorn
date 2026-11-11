@@ -384,13 +384,13 @@ function animateDragon(d, dt) {
   bob += animateDragonWings(d, dt, takeoffC);
 
   // apply
-  md.body.position.set(0, DRAGON_HIP_Y + bob + Math.sin(state.time * 1.6 + d.breath) * 0.012, 0);
+  md.body.position.set(0, DRAGON_HIP_Y + bob + Math.sin(state.time * 1.6 + d.phase) * 0.012, 0);
   md.body.rotation.set(pitch, sway, roll);
   barrelRoll(d, dt, md.body, 0.12); // about the middle of the torso
   let neckPitch = 0;
   md.neckSegs.forEach((s, i) => {
     s.rotation.x = DRAGON_NECK_REST[i] + (DRAGON_NECK_FLY[i] - DRAGON_NECK_REST[i]) * d.flyW + headUp * 0.4
-      + Math.sin(state.time * 1.3 + d.breath - i * 0.5) * 0.03;
+      + Math.sin(state.time * 1.3 + d.phase - i * 0.5) * 0.03;
     s.rotation.y = neckYaw / 3 - sway * 0.8;
     neckPitch += s.rotation.x;
   });
@@ -404,7 +404,7 @@ function animateDragon(d, dt) {
   md.tail.rotation.x = 0.04 - pitch * 0.5;
   md.tailSegs.forEach((s, i) => {
     s.rotation.x = 0.015 * (1 - d.flyW) + Math.sin(state.time * 2 - i * 0.6) * 0.04 * d.flyW;
-    s.rotation.y = -Math.sin(P - i * 0.5) * 0.1 * walkAmt + Math.sin(state.time * 0.9 + d.breath - i * 0.5) * 0.05
+    s.rotation.y = -Math.sin(P - i * 0.5) * 0.1 * walkAmt + Math.sin(state.time * 0.9 + d.phase - i * 0.5) * 0.05
       - clamp(d.turn * 0.08, -0.12, 0.12);
   });
 
@@ -451,6 +451,8 @@ function breatheFire(d, dt) {
 const AIM_RANGE = 40;                            // blocks
 const AIM_YAW = 1, AIM_UP = 0.7, AIM_DOWN = -1.1; // how far the neck turns, in radians
 const AIM_ASSIST = 0.12;                         // radians off the crosshair a dragon still counts as aimed at
+const AIM_DEADZONE = 1.5;                        // blocks: closer than this to its body, the yaw is ignored
+const AIM_BEHIND = 2.2;                          // radians round from the way it faces: where "left" and "right" blur
 const aimAt = new THREE.Vector3();
 export function aimDragon(d, eye, dir, dt) {
   const hit = raycast(eye, dir, AIM_RANGE);
@@ -464,13 +466,26 @@ export function aimDragon(d, eye, dir, dt) {
     if (t > 0 && t < dist && tmp.angleTo(dir) < AIM_ASSIST) { dist = t; aimAt.copy(tmp).add(eye); onSomething = true; }
   }
   tmp.subVectors(aimAt, d.fireFrom);
-  const yaw = wrapAngle(Math.atan2(-tmp.x, -tmp.z) - d.yaw), pitch = Math.atan2(tmp.y, Math.hypot(tmp.x, tmp.z));
+  const pitch = Math.atan2(tmp.y, Math.hypot(tmp.x, tmp.z)), reach = tmp.length();
+  // The yaw is measured from the dragon's body, not its head: the head moves with the aim, and a
+  // target close below it (looking straight down at the dragon you ride) would feed back and make it
+  // jitter. Right underneath, the direction is meaningless, so it holds where it was looking.
+  tmp.set(aimAt.x - d.pos.x, 0, aimAt.z - d.pos.z);
+  const near = clamp((tmp.length() - AIM_DEADZONE) / AIM_DEADZONE, 0, 1);
+  let yaw = near > 0 ? wrapAngle(Math.atan2(-tmp.x, -tmp.z) - d.yaw) : d.aimYawRaw || 0;
+  if (near < 1 && near > 0) yaw = (d.aimYawRaw || 0) + wrapAngle(yaw - (d.aimYawRaw || 0)) * near;
+  // Looking back over its tail, the target is nearly straight behind, where a hair's breadth either
+  // way flips it from one side to the other and the head would snap left and right (two heads).
+  // So it keeps to the side it was already looking to until the target is clearly round to the other.
+  if (Math.abs(yaw) < AIM_BEHIND) d.aimSide = Math.sign(yaw) || d.aimSide;
+  else yaw = d.aimSide * Math.abs(yaw);
+  d.aimYawRaw = yaw;
   d.aimYaw = clamp(yaw, -AIM_YAW, AIM_YAW);
   d.aimPitch = clamp(pitch, AIM_DOWN, AIM_UP);
   // breathing, it swings round to face its target: quickly if that's past where its neck reaches
   if (d.breathing) d.yaw += (yaw - d.aimYaw) * Math.min(1, dt * 5) + d.aimYaw * Math.min(1, dt * 2);
   // close enough for the flames to reach it (shown by the crosshair, see hud.js)
-  d.aimInRange = onSomething && tmp.length() < d.breathRange + 1 && pitch === d.aimPitch;
+  d.aimInRange = onSomething && reach < d.breathRange + 1 && pitch === d.aimPitch;
 }
 
 // Health and barrel-roll cooldowns follow the rules in rules.js. Playing together the server
@@ -501,7 +516,7 @@ export function updateDragon(d, dt) {
     // steered by its rider (see rideDragon), or run on another computer (see multiplayer.js)
   } else if (d.state === 'fly' || d.state === 'land') {
     // wander in lazy curves, heading back over the island if it strays out to sea
-    d.wanderYaw += Math.sin(state.time * 0.3 + d.breath) * dt * 0.6;
+    d.wanderYaw += Math.sin(state.time * 0.3 + d.phase) * dt * 0.6;
     const hx = -d.pos.x, hz = -d.pos.z;
     if (Math.hypot(hx, hz) > DRAGON_HOME_RADIUS) d.wanderYaw = lerpAngle(d.wanderYaw, Math.atan2(-hx, -hz), dt * 1.2);
     const sp = d.state === 'land' ? 3 : 7;
@@ -622,10 +637,10 @@ export function makeDragon(c, p, kind = {}) {
     rider: null, baseH: k.h, riddenH: k.riddenH, seatRestY: k.seatRestY, seatWorld: new THREE.Vector3(),
     state: 'idle', stateT: 0, aiTimer: 1 + rand() * 3, turnCd: 0, stuckT: 0, cruise: 12, groundY: p.y,
     phase: 0, flyW: 0, reachW: 0, fvy: 0, landT: 0, turn: 0, idle: null, idleT: 0, idleCd: 2 + Math.random() * 4, lookTo: 0,
-    blinkT: Math.random() * 4, breath: Math.random() * 6, glideT: 0, flapping: false,
+    blinkT: Math.random() * 4, phase: Math.random() * 6, glideT: 0, flapping: false,
     wingFold: 1, wingAmp: 0, wingFreq: 1, wingDihedral: 0.12, wingP: 0, roll: null, barrel: 0,
     breathing: false, fireW: 0, fireAcc: 0, breathOn: false, fireFrom: new THREE.Vector3(), fireDir: new THREE.Vector3(),
-    aimYaw: 0, aimPitch: 0, aimW: 0, aimInRange: false,
+    aimYaw: 0, aimPitch: 0, aimSide: 1, aimW: 0, aimInRange: false,
     health: DRAGON_HEARTS, hurtCd: 0, healT: 0, rollCd: 0, dizzy: 0, rollCounted: false,
   });
   d.pos.copy(p);

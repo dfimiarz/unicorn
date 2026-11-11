@@ -16,6 +16,7 @@ import { updateSky } from './daynight.js';
 import { updateHud } from './hud.js';
 import { composer, renderGodRays } from './postfx.js';
 import { state } from './state.js';
+import { setShadows } from './modelkit.js';
 
 // Entry point: builds the start area, then runs the game loop.
 
@@ -28,6 +29,15 @@ updateChunks(400, player.pos);
   state.yaw = Math.atan2(-(u.pos.x - player.pos.x), -(u.pos.z - player.pos.z));
 }
 
+// beyond this far from the camera (blocks) an animal's shadow is left out; a little hysteresis
+// stops one on the edge flickering. The shadow map only reaches 48 blocks round the player anyway.
+const SHADOW_DIST = 32;
+function lodShadows(root, pos) {
+  const d = Math.hypot(pos.x - camera.position.x, pos.y - camera.position.y, pos.z - camera.position.z);
+  if (d > SHADOW_DIST + 3) setShadows(root, false);
+  else if (d < SHADOW_DIST - 3) setShadows(root, true);
+}
+
 function update(dt) {
   state.time += dt;
   updatePlayer(dt);
@@ -36,12 +46,12 @@ function update(dt) {
     // animals far from every player wait (hidden) until someone comes back
     const active = nearAnyPlayer(m.pos, MOB_ACTIVE_DIST);
     m.model.root.visible = active;
-    if (active) updateMob(m, dt);
+    if (active) { updateMob(m, dt); lodShadows(m.model.root, m.pos); }
   }
   for (const d of dragons) {
     const active = nearAnyPlayer(d.pos, MOB_ACTIVE_DIST);
     d.model.root.visible = active;
-    if (active) updateDragon(d, dt);
+    if (active) { updateDragon(d, dt); lodShadows(d.model.root, d.pos); }
   }
   updatePlayerModel(dt);
   poseOthers(dt);

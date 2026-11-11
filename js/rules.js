@@ -2,9 +2,9 @@ import { FLAMMABLE } from './blocktypes.js';
 
 // The rules that decide what happens: fires catching, spreading and burning blocks away, and
 // dragons losing hearts to fire and bubbles, healing, and waiting out their barrel-roll cooldown.
-// Playing together the server runs them (server.js) and tells everyone what happened, so nobody can
+// Playing together the server runs them (server/rules.go, which repeats them) and tells everyone what happened, so nobody can
 // change them from their browser; playing alone the game runs them itself (fire.js, dragon.js).
-// Nothing here draws anything, and it all works on plain numbers, so it runs the same in Node.
+// Nothing here draws anything, and it all works on plain numbers, so the server can repeat it exactly in Go (server/rules.go). Keep the two in step.
 
 // ---------------------------------------------------------------- fire
 // A flammable block that fire touches catches light, now and then sets a flammable neighbour
