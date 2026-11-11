@@ -1,0 +1,9 @@
+# only what the Dockerfile copies is sent to the build
+*
+!go.mod
+!server
+!index.html
+!screech.m4a
+!css
+!js
+server/*_test.go

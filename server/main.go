@@ -7,6 +7,8 @@
 // relays messages between the players over a WebSocket at /ws. It needs nothing but Go to build,
 // and uses nothing outside Go's standard library.
 //
+// It also runs in a container: see the Dockerfile.
+//
 // To play over the internet, run it where players can reach it, behind whatever gives it an
 // https address (a hosting service, or a proxy such as Caddy or nginx): the game then connects
 // with wss by itself. Only the game's own page may connect (see sameOrigin in ws.go); if a proxy
@@ -27,10 +29,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -88,8 +92,15 @@ func fileHandler(root string) http.HandlerFunc {
 	}
 }
 
+// In a container (the Dockerfile sets IN_CONTAINER) the only addresses the server can see are the
+// container's own, which nobody outside it can reach, so it doesn't offer them to anyone.
+var inContainer = os.Getenv("IN_CONTAINER") != ""
+
 func lanAddresses() []string {
 	out := []string{}
+	if inContainer {
+		return out
+	}
 	addrs, _ := net.InterfaceAddrs()
 	for _, a := range addrs {
 		if n, ok := a.(*net.IPNet); ok && !n.IP.IsLoopback() && n.IP.To4() != nil {
@@ -130,11 +141,22 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("Unicorn Craft is running.\n  On this computer:  http://localhost:%d/\n", port)
+	if inContainer { // where that is from outside is up to whoever started the container
+		fmt.Printf("Unicorn Craft is running on port %d.\n", port)
+	} else {
+		fmt.Printf("Unicorn Craft is running.\n  On this computer:  http://localhost:%d/\n", port)
+	}
 	for _, a := range lanAddresses() {
 		fmt.Printf("  On the network:    %s\n", a)
 	}
 	fmt.Println("Add ?name=YourName to the address to pick a name.")
+	// being told to stop (Ctrl-C, or the container being stopped) isn't a crash
+	go func() {
+		stop := make(chan os.Signal, 1)
+		signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+		<-stop
+		os.Exit(0)
+	}()
 	// on the internet, a connection that never finishes asking for anything isn't left open for ever
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: time.Minute}
 	log.Fatal(srv.Serve(ln))
