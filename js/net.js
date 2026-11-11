@@ -6,6 +6,7 @@
 // What the messages mean, and what the game does with them, is in multiplayer.js.
 export const session = {
   online: false, // connected to the server
+  lost: false,   // was connected, until the connection dropped
   id: 0, name: '', host: 0,
   seed: null,    // the world everyone plays in; null until the first player has picked it
   hour: null, ffwd: false, lan: [], edits: [], burns: [], hp: [], riders: [], players: [], // what the server sent on joining
@@ -45,7 +46,7 @@ await new Promise(resolve => {
   ws.onclose = () => {
     clearTimeout(timer);
     if (!settled) { ws = null; return settle(); }
-    if (session.online) { session.online = false; dispatch({ t: 'disconnected' }); }
+    if (session.online) { session.online = false; session.lost = true; dispatch({ t: 'disconnected' }); }
   };
   ws.onmessage = e => {
     const m = JSON.parse(e.data);

@@ -226,12 +226,19 @@ function showStatus() {
   const el = document.getElementById('net');
   if (!el) return;
   if (!session.online) {
-    el.textContent = 'Single player. To play together, start the game with: go run ./server';
+    el.textContent = session.lost ? 'The connection to the game was lost, so you are playing alone now. Reload the page to join again.'
+      : 'Single player. To play together, start the game with: go run ./server';
     return;
   }
+  // How friends join: at the address this page came from, unless that's this computer's own name
+  // for itself, when it's the one the server found for it on the network.
+  const h = location.hostname;
+  const here = h === 'localhost' || h === '127.0.0.1' || h === '[::1]';
+  const lan = here || h.endsWith('.local') || /^(10|192\.168|172\.(1[6-9]|2\d|3[01]))\./.test(h);
+  const where = here ? session.lan[0] : location.origin + '/';
   const n = playerCount();
   el.textContent = `Playing together as ${session.name}${session.isHost ? ' (host)' : ''} · ${n} player${n === 1 ? '' : 's'} online`
-    + (session.lan.length ? `\nFriends on the same Wi-Fi can join at ${session.lan[0]}` : '');
+    + (where ? `\nFriends${lan ? ' on the same Wi-Fi' : ''} can join at ${where}` : '');
 }
 showStatus();
 

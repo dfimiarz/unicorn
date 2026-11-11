@@ -25,6 +25,7 @@ type Player struct {
 	done  chan struct{} // closed when the player has gone
 	ready bool          // welcomed: in the game
 	away  bool          // their tab is hidden
+	heard time.Time     // when they last sent anything
 	s     M             // where they are, and where they're looking
 	track track
 	// messages they may still send: see allowance
@@ -111,7 +112,7 @@ func join(p *Player) {
 	if p.name == "" {
 		p.name = fmt.Sprintf("Player %d", p.id)
 	}
-	p.tokens, p.tokensAt = burst, time.Now()
+	p.tokens, p.tokensAt, p.heard = burst, time.Now(), time.Now()
 	players[p.id] = p
 	joined = append(joined, p)
 	switch {
@@ -125,16 +126,24 @@ func join(p *Player) {
 	}
 }
 
-// The host should be someone whose game is actually running: a browser pauses a hidden tab.
+// A game that is running sends where its player is a dozen times a second. One that has sent
+// nothing for this long isn't running: its tab is hidden (which it says: away), or its connection
+// has stalled or gone without closing, which over the internet is the commoner thing.
+const hostQuiet = 3 * time.Second
+
+func (p *Player) stopped() bool { return p.away || time.Since(p.heard) > hostQuiet }
+
+// The host should be someone whose game is actually running, or the animals nobody is riding
+// stand still for everyone. Called whenever that might have changed, and every couple of seconds.
 func pickHost(except *Player) {
 	ready := readyPlayers()
 	current := players[hostId]
-	if current != nil && current.ready && !current.away {
+	if current != nil && current.ready && !current.stopped() {
 		return
 	}
 	var next *Player
 	for _, o := range ready {
-		if !o.away {
+		if !o.stopped() {
 			next = o
 			break
 		}
@@ -287,7 +296,7 @@ const (
 	run   = 30  // blocks a second: faster than any animal runs, flies or falls
 	climb = 30
 	fall  = 50
-	slack = 3 // blocks of leeway for the jitter in when messages arrive
+	late  = 1.0 // seconds of movement that may turn up all at once, after a hold-up on the way
 
 	rate  = 200 // messages a second; the game sends a few dozen
 	burst = 400
@@ -369,22 +378,46 @@ type track struct {
 	has bool
 	pos [3]float64
 	at  time.Time
+	// seconds of movement in hand, across the ground and up or down: see moveTo
+	spare, spareY float64
 }
 
 // Where something (a player or an animal) is allowed to have got to since the last update: any
 // further than it could have run, climbed or fallen in the time, and it only gets that far.
-func moveTo(t *track, to []float64) [3]float64 {
-	now := time.Now()
+//
+// The time is what has passed since the last update, plus what's in hand. Over the internet
+// updates are held up and then arrive in a bunch, with no time between them, so time that went
+// unused (while the bunch was on its way, or by moving slower than the limit) is kept in hand, up
+// to a second (late). Sending more updates gets nobody any further: it's the time that counts.
+func moveTo(t *track, to []float64) [3]float64 { return moveToAt(t, to, time.Now()) }
+
+func moveToAt(t *track, to []float64, now time.Time) [3]float64 {
 	x, y, z := to[0], to[1], to[2]
 	if t.has {
 		px, py, pz := t.pos[0], t.pos[1], t.pos[2]
-		dt := now.Sub(t.at).Seconds()
+		dt := math.Max(0, now.Sub(t.at).Seconds())
+
+		secs := dt + t.spare
 		dx, dz := x-px, z-pz
-		d, maxD := math.Hypot(dx, dz), run*dt+slack
-		if d > maxD {
+		d := math.Hypot(dx, dz)
+		if maxD := run * secs; d > maxD {
 			x, z = px+dx/d*maxD, pz+dz/d*maxD
+			d = maxD
 		}
-		y = math.Min(py+climb*dt+slack, math.Max(py-fall*dt-slack, y))
+		t.spare = math.Min(late, secs-d/run)
+
+		secs = dt + t.spareY
+		dy, speed := y-py, float64(climb)
+		if dy < 0 {
+			dy, speed = -dy, fall
+		}
+		if maxY := speed * secs; dy > maxY {
+			y = py + math.Copysign(maxY, y-py)
+			dy = maxY
+		}
+		t.spareY = math.Min(late, secs-dy/speed)
+	} else {
+		t.spare, t.spareY = late, late
 	}
 	t.pos, t.at, t.has = [3]float64{x, y, z}, now, true
 	return t.pos
@@ -614,7 +647,16 @@ func receive(p *Player, m M) {
 		}
 		list = list[:min(len(list), 2000)]
 		out := []M{}
+		seen := map[string]bool{} // each animal once: only its first update in a message counts
 		for _, e := range list {
+			if a, ok := e.(M); ok {
+				if id, ok := a["i"].(string); ok {
+					if seen[id] {
+						continue
+					}
+					seen[id] = true
+				}
+			}
 			if u := animalUpdate(p, e); u != nil {
 				out = append(out, u)
 			}

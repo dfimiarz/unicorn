@@ -7,6 +7,11 @@
 // relays messages between the players over a WebSocket at /ws. It needs nothing but Go to build,
 // and uses nothing outside Go's standard library.
 //
+// To play over the internet, run it where players can reach it, behind whatever gives it an
+// https address (a hosting service, or a proxy such as Caddy or nginx): the game then connects
+// with wss by itself. Only the game's own page may connect (see sameOrigin in ws.go); if a proxy
+// hides the address players use, give it with ORIGIN=play.example.com.
+//
 // The server keeps what a newcomer needs to join: the world seed (picked by the first player),
 // every block changed since, the blocks on fire, who is riding which animal, the dragons' hearts,
 // and the time of day. It also decides what happens, by the game's own rules (rules.go, the same
@@ -38,9 +43,21 @@ var contentTypes = map[string]string{
 }
 
 // ---------------------------------------------------------------- files
-// serves the game's own files: nothing outside the folder, no hidden files (.git), not the server
+// What the game is made of, at the top of its folder: only these (and what's inside the folders)
+// are served. Everything else there (the server, .git, anything added later) stays private,
+// however its name is spelled: a list of what to hide would miss "Server" on a disk that ignores
+// capitals. A new top-level file or folder the game loads has to be added here.
+var served = map[string]bool{"index.html": true, "css": true, "js": true, "screech.m4a": true}
+
+// serves the game's own files: nothing outside the folder, no hidden files, nothing but the game
 func fileHandler(root string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// on Windows a backslash separates folders too, and a colon names a drive or a hidden
+		// stream; the checks below only know about "/", so a path with either is refused
+		if strings.ContainsAny(r.URL.Path, `\:`) {
+			http.NotFound(w, r)
+			return
+		}
 		rel := path.Clean("/" + r.URL.Path)
 		if strings.HasSuffix(r.URL.Path, "/") {
 			rel = path.Join(rel, "index.html")
@@ -51,11 +68,12 @@ func fileHandler(root string) http.HandlerFunc {
 				return
 			}
 		}
-		if top := strings.SplitN(rel[1:], "/", 2)[0]; top == "server" || top == "go.mod" || top == "go.sum" {
+		local := filepath.FromSlash(rel[1:])
+		if !served[strings.SplitN(rel[1:], "/", 2)[0]] || !filepath.IsLocal(local) {
 			http.NotFound(w, r)
 			return
 		}
-		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+		data, err := os.ReadFile(filepath.Join(root, local))
 		if err != nil {
 			http.Error(w, "Not found", http.StatusNotFound)
 			return
@@ -98,7 +116,15 @@ func main() {
 	mux.HandleFunc("/", fileHandler(root))
 
 	go every(time.Duration(tickSeconds*float64(time.Second)), tick)
-	go every(2*time.Second, func() { broadcast(timeMsg(), nil) })
+	go every(2*time.Second, func() {
+		pickHost(nil) // the host's game may have stopped without a word: see pickHost
+		broadcast(timeMsg(), nil)
+	})
+	go every(pingEvery, func() { // see readFrames
+		for _, p := range joined {
+			p.push(pingFrame)
+		}
+	})
 
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
@@ -109,7 +135,9 @@ func main() {
 		fmt.Printf("  On the network:    %s\n", a)
 	}
 	fmt.Println("Add ?name=YourName to the address to pick a name.")
-	log.Fatal(http.Serve(ln, mux))
+	// on the internet, a connection that never finishes asking for anything isn't left open for ever
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: time.Minute}
+	log.Fatal(srv.Serve(ln))
 }
 
 func every(d time.Duration, f func()) {
